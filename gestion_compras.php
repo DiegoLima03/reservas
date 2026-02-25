@@ -268,12 +268,19 @@ try {
                   </tr>
                 </thead>
                 <tbody>
-                <?php foreach ($matriz as $row):
+                <?php
+                $totalCompradoSum = 0;
+                $totalAsignadoSum = 0;
+                $totalRestanteSum = 0;
+                foreach ($matriz as $row):
                   $fechaCompraRaw = (string)($row['fecha_compra'] ?? '');
                   $fechaCompra    = $fechaCompraRaw !== '' ? date('d/m/Y', strtotime($fechaCompraRaw)) : '';
                   $totalComprado  = (int)$row['cantidad_comprada'];
                   $asignadoLote   = (int)$row['cantidad_asignada'];
                   $restante       = (int)$row['cantidad_disponible'];
+                  $totalCompradoSum += $totalComprado;
+                  $totalAsignadoSum += $asignadoLote;
+                  $totalRestanteSum += $restante;
                   $rowClassParts  = [];
                   if ($restante === 0) {
                     $rowClassParts[] = 'row-resto0';
@@ -283,7 +290,12 @@ try {
                   }
                   $rowClass = implode(' ', $rowClassParts);
                 ?>
-                  <tr class="<?= $rowClass ?>">
+                  <tr
+                    class="<?= $rowClass ?>"
+                    data-comprado="<?= $totalComprado ?>"
+                    data-asignado="<?= $asignadoLote ?>"
+                    data-restante="<?= $restante ?>"
+                  >
                     <td class="text-center align-middle">
                       <button
                         type="button"
@@ -318,10 +330,21 @@ try {
                 <?php endforeach; ?>
                 <?php if (!$matriz): ?>
                   <tr>
-                    <td colspan="9" class="text-center text-muted">No hay stock registrado.</td>
+                    <td colspan="10" class="text-center text-muted">No hay stock registrado.</td>
                   </tr>
                 <?php endif; ?>
                 </tbody>
+                <?php if ($matriz): ?>
+                <tfoot>
+                  <tr class="table-secondary fw-semibold">
+                    <td colspan="6" class="text-end">Totales:</td>
+                    <td class="cell-qty">0</td>
+                    <td class="cell-qty">0</td>
+                    <td class="cell-qty">0</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+                <?php endif; ?>
               </table>
             </div>
           </div>
@@ -661,6 +684,38 @@ function createAutocomplete({input, hidden, list, type}) {
   });
 }
 
+function updateMatrizTotals(){
+  const table = document.getElementById('tablaMatriz');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  const tfoot = table.querySelector('tfoot');
+  if (!tbody || !tfoot) return;
+
+  let sumComprado = 0;
+  let sumAsignado = 0;
+  let sumRestante = 0;
+
+  tbody.querySelectorAll('tr').forEach(tr=>{
+    // ignorar filas de detalle
+    if (tr.classList.contains('fila-lineas-asig')) return;
+    // ignorar filas ocultas por el filtro
+    if (getComputedStyle(tr).display === 'none') return;
+
+    const comprado = parseInt(tr.getAttribute('data-comprado') || '0', 10) || 0;
+    const asignado = parseInt(tr.getAttribute('data-asignado') || '0', 10) || 0;
+    const restante = parseInt(tr.getAttribute('data-restante') || '0', 10) || 0;
+
+    sumComprado += comprado;
+    sumAsignado += asignado;
+    sumRestante += restante;
+  });
+
+  const cells = tfoot.querySelectorAll('td');
+  if (cells[6]) cells[6].textContent = nf.format(sumComprado);
+  if (cells[7]) cells[7].textContent = nf.format(sumAsignado);
+  if (cells[8]) cells[8].textContent = nf.format(sumRestante);
+}
+
 function applyTextFilter(){
   const term = (document.getElementById('ftexto')?.value || '').trim().toLowerCase();
   const table = document.getElementById('tablaMatriz');
@@ -696,6 +751,8 @@ function applyTextFilter(){
 
     tr.style.display = '';
   });
+
+  updateMatrizTotals();
 }
 
 // Cargar proveedores en el desplegable de compras según nombre de producto
