@@ -8,6 +8,21 @@ require_once __DIR__ . '/db.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 
+function isoWeekToMondayDate(?string $isoWeek): ?string
+{
+  if (!is_string($isoWeek)) return null;
+  $isoWeek = trim($isoWeek);
+  if ($isoWeek === '' || !preg_match('/^\d{4}-W\d{2}$/', $isoWeek)) return null;
+
+  [$year, $week] = explode('-W', $isoWeek);
+  $y = (int)$year;
+  $w = (int)$week;
+  if ($w < 1 || $w > 53) return null;
+
+  $dt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+  return $dt->setISODate($y, $w, 1)->format('Y-m-d');
+}
+
 // Admite form-data o JSON
 $input = $_POST;
 if (empty($input)) {
@@ -24,14 +39,30 @@ $producto_id   = (int)($input['producto_id']   ?? 0);
 $proveedor_id  = (int)($input['proveedor_id']  ?? 0);
 $delegacion_id = (int)($input['delegacion_id'] ?? 0);
 $cantidad      = (int)($input['cantidad']      ?? 0);
+$semana_salida = trim((string)($input['semana_salida'] ?? ''));
 $fecha_salida  = trim((string)($input['fecha_salida'] ?? ''));
+
+if ($semana_salida === '' && $fecha_salida !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha_salida)) {
+  $ts = strtotime($fecha_salida);
+  if ($ts !== false) {
+    $semana_salida = date('o-\WW', $ts);
+  }
+}
+
+if ($fecha_salida === '' && $semana_salida !== '') {
+  $fecha_salida = (string)isoWeekToMondayDate($semana_salida);
+}
 
 $errors = [];
 if ($producto_id   <= 0) $errors[] = "producto_id vacío o no válido";
 if ($proveedor_id  <= 0) $errors[] = "proveedor_id vacío o no válido";
 if ($delegacion_id <= 0) $errors[] = "delegacion_id vacío o no válido";
 if ($cantidad      <= 0) $errors[] = "cantidad debe ser > 0";
-if ($fecha_salida  === '') $errors[] = "fecha_salida requerida (YYYY-MM-DD)";
+if ($semana_salida === '') $errors[] = "semana_salida requerida (YYYY-WNN)";
+if ($semana_salida !== '' && !preg_match('/^\d{4}-W\d{2}$/', $semana_salida)) {
+  $errors[] = "semana_salida inválida (YYYY-WNN)";
+}
+if ($fecha_salida === '') $errors[] = "No se pudo convertir semana_salida a fecha";
 
 if ($errors) {
   echo json_encode(['ok' => false, 'errors' => $errors], JSON_UNESCAPED_UNICODE);
@@ -66,7 +97,7 @@ try {
     SELECT id, cantidad_disponible
     FROM compras_stock
     WHERE producto_id = ? AND proveedor_id = ?
-    ORDER BY fecha_compra ASC, id ASC
+    ORDER BY semana ASC, id ASC
     FOR UPDATE
   ");
   $st->execute([$producto_id, $proveedor_id]);
@@ -170,4 +201,3 @@ try {
     'error' => $e->getMessage()
   ], JSON_UNESCAPED_UNICODE);
 }
-

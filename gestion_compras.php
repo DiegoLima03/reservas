@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 // gestion_compras.php — Gestión de compras (entradas) y stock por proveedor + asignaciones (salidas)
 require_once __DIR__ . '/db.php';
 
@@ -6,12 +6,24 @@ require_once __DIR__ . '/db.php';
 @error_reporting(E_ALL);
 
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+function normalizeIsoWeek(?string $value): string {
+  $value = trim((string)$value);
+  if ($value === '') return '';
+  if (preg_match('/^\d{4}-W\d{2}$/', $value)) return $value;
+  if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+    $ts = strtotime($value);
+    if ($ts !== false) {
+      return date('o-\WW', $ts);
+    }
+  }
+  return '';
+}
 
 try {
   $pdo = pdo();
 
   // =============================
-  // Matriz de stock agrupada por producto + proveedor + fecha_compra
+  // Matriz de stock agrupada por producto + proveedor + semana
   // =============================
   $sqlMatriz = "
     SELECT
@@ -21,7 +33,7 @@ try {
       p.proveedor          AS producto_proveedor,
       pr.id                AS proveedor_id,
       pr.nombre            AS proveedor_nombre,
-      c.fecha_compra,
+      c.semana AS fecha_compra,
       SUM(c.cantidad_comprada)                             AS cantidad_comprada,
       SUM(c.cantidad_comprada - c.cantidad_disponible)     AS cantidad_asignada,
       SUM(c.cantidad_disponible)                           AS cantidad_disponible
@@ -35,32 +47,28 @@ try {
       p.proveedor,
       pr.id,
       pr.nombre,
-      c.fecha_compra
+      c.semana
     ORDER BY
       p.nombre ASC,
       pr.nombre ASC,
-      c.fecha_compra DESC
+      c.semana DESC
   ";
   $matriz = $pdo->query($sqlMatriz)->fetchAll(PDO::FETCH_ASSOC);
 
   // Marcar qué líneas están completamente asignadas y son "antiguas"
   // para poder ocultarlas por defecto en la matriz y mostrarlas bajo demanda.
-  $DIAS_OCULTAR_CERRADAS = 7; // líneas cerradas con más de 7 días
-  $hoy = new DateTimeImmutable('today');
+  // Regla: ocultar si restante = 0 y la semana de compra es anterior a la actual.
+  $semanaActualIso = (new DateTimeImmutable('today'))->format('o-\WW');
   foreach ($matriz as &$row) {
     $row['cerrada_antigua'] = 0;
     $restante = (int)($row['cantidad_disponible'] ?? 0);
+    $semanaFila = normalizeIsoWeek((string)($row['fecha_compra'] ?? ''));
+    $row['semana_compra_norm'] = $semanaFila;
     if ($restante <= 0) {
-      $fechaRaw = (string)($row['fecha_compra'] ?? '');
-      if ($fechaRaw !== '') {
-        try {
-          $fecha = new DateTimeImmutable($fechaRaw);
-          $diff  = $hoy->diff($fecha)->days;
-          if ($diff > $DIAS_OCULTAR_CERRADAS) {
-            $row['cerrada_antigua'] = 1;
-          }
-        } catch (Throwable $e) {
-          // Si la fecha es inválida, dejamos la fila visible por seguridad
+      if ($semanaFila !== '') {
+        // Comparación lexicográfica segura por formato fijo YYYY-WNN
+        if ($semanaFila < $semanaActualIso) {
+          $row['cerrada_antigua'] = 1;
         }
       }
     }
@@ -70,8 +78,10 @@ try {
   // =============================
   // Listado básico de productos (para pestaña Productos)
   // =============================
+  $hasCodigoVelneo = (bool)$pdo->query("SHOW COLUMNS FROM productos LIKE 'codigo_velneo'")->fetch(PDO::FETCH_ASSOC);
+  $selectCodigoVelneo = $hasCodigoVelneo ? 'codigo_velneo' : "'' AS codigo_velneo";
   $sqlProductos = "
-    SELECT id, tipo, nombre, proveedor
+    SELECT id, tipo, nombre, proveedor, {$selectCodigoVelneo}
     FROM productos
     ORDER BY nombre
   ";
@@ -103,9 +113,137 @@ try {
   $sqlDelegaciones = "
     SELECT id, nombre
     FROM delegaciones
-    ORDER BY nombre
+    ORDER BY id ASC
   ";
   $delegaciones = $pdo->query($sqlDelegaciones)->fetchAll(PDO::FETCH_ASSOC);
+
+  // =============================
+  // Pre-reservas pendientes
+  // =============================
+  $sqlPreReservas = "
+    SELECT id, comercial_id, comercial_nombre, tipo, producto_deseado, cantidad, fecha_deseada, estado, created_at
+    FROM pre_reservas
+    WHERE estado = 'pendiente'
+    ORDER BY fecha_deseada ASC, created_at ASC
+  ";
+  $preReservas = $pdo->query($sqlPreReservas)->fetchAll(PDO::FETCH_ASSOC);
+
+  $preReservasPendPorProducto = [];
+  foreach ($preReservas as $pr) {
+    $productoPre = trim((string)($pr['producto_deseado'] ?? ''));
+    if ($productoPre === '') {
+      continue;
+    }
+    $key = mb_strtolower($productoPre, 'UTF-8');
+    $preReservasPendPorProducto[$key] = (int)($preReservasPendPorProducto[$key] ?? 0) + (int)($pr['cantidad'] ?? 0);
+  }
+
+  // =============================
+  // Reparto: matriz Producto (Y) x Delegación (X)
+  // =============================
+  $sqlReparto = "
+    SELECT
+      p.tipo AS tipo_producto,
+      p.nombre AS nombre_producto,
+      p.proveedor AS proveedor_producto,
+      a.delegacion_id,
+      SUM(a.cantidad_asignada) AS cantidad_total
+    FROM asignaciones a
+    INNER JOIN productos p ON p.id = a.producto_id
+    GROUP BY p.tipo, p.nombre, p.proveedor, a.delegacion_id
+  ";
+  $rowsReparto = $pdo->query($sqlReparto)->fetchAll(PDO::FETCH_ASSOC);
+  $repartoMap = [];
+  foreach ($rowsReparto as $rr) {
+    $tipo = trim((string)($rr['tipo_producto'] ?? ''));
+    $nombre = trim((string)($rr['nombre_producto'] ?? ''));
+    $proveedor = trim((string)($rr['proveedor_producto'] ?? ''));
+    $did = (int)($rr['delegacion_id'] ?? 0);
+    $qty = (int)($rr['cantidad_total'] ?? 0);
+    $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
+    if (!isset($repartoMap[$keyProd])) {
+      $repartoMap[$keyProd] = [];
+    }
+    $repartoMap[$keyProd][$did] = $qty;
+  }
+
+  $productosEje = [];
+  foreach ($productos as $p) {
+    $tipo = trim((string)($p['tipo'] ?? ''));
+    $nombre = trim((string)($p['nombre'] ?? ''));
+    $proveedor = trim((string)($p['proveedor'] ?? ''));
+    $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
+    if (!isset($productosEje[$keyProd])) {
+      $productosEje[$keyProd] = [
+        'tipo' => $tipo,
+        'nombre' => $nombre,
+        'proveedor' => $proveedor,
+      ];
+    }
+  }
+  $productosEje = array_values($productosEje);
+
+  // =============================
+  // Exportación Excel (CSV) de Reparto
+  // =============================
+  if (isset($_GET['export_reparto']) && $_GET['export_reparto'] === '1') {
+    $filename = 'reparto_' . date('Ymd_His') . '.csv';
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    echo "\xEF\xBB\xBF";
+
+    $out = fopen('php://output', 'w');
+    if ($out === false) {
+      throw new RuntimeException('No se pudo abrir salida CSV.');
+    }
+
+    $header = ['Producto'];
+    foreach ($delegaciones as $d) {
+      $header[] = (string)($d['nombre'] ?? '');
+    }
+    $header[] = 'Total';
+    fputcsv($out, $header, ';');
+
+    $totalesPorDelegacion = [];
+    $totalGeneral = 0;
+    foreach ($delegaciones as $d) {
+      $totalesPorDelegacion[(int)$d['id']] = 0;
+    }
+
+    foreach ($productosEje as $pe) {
+      $tipo = trim((string)($pe['tipo'] ?? ''));
+      $nombre = trim((string)($pe['nombre'] ?? ''));
+      $proveedor = trim((string)($pe['proveedor'] ?? ''));
+      $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
+      $labelProducto = trim($tipo . ' - ' . $nombre, ' -');
+      if ($proveedor !== '') {
+        $labelProducto .= ' (' . $proveedor . ')';
+      }
+
+      $row = [$labelProducto];
+      $totalFila = 0;
+      foreach ($delegaciones as $d) {
+        $did = (int)$d['id'];
+        $qty = (int)($repartoMap[$keyProd][$did] ?? 0);
+        $row[] = $qty;
+        $totalFila += $qty;
+        $totalesPorDelegacion[$did] += $qty;
+      }
+      $row[] = $totalFila;
+      $totalGeneral += $totalFila;
+      fputcsv($out, $row, ';');
+    }
+
+    $footer = ['Totales'];
+    foreach ($delegaciones as $d) {
+      $footer[] = (int)($totalesPorDelegacion[(int)$d['id']] ?? 0);
+    }
+    $footer[] = (int)$totalGeneral;
+    fputcsv($out, $footer, ';');
+
+    fclose($out);
+    exit;
+  }
 
 } catch (Throwable $e) {
   http_response_code(500);
@@ -174,8 +312,18 @@ try {
       </button>
     </li>
     <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-prereservas-tab" data-bs-toggle="tab" data-bs-target="#tab-prereservas" type="button" role="tab">
+        Pre-reservas
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
       <button class="nav-link active" id="tab-stock-tab" data-bs-toggle="tab" data-bs-target="#tab-stock" type="button" role="tab">
         Matriz de stock
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-reparto-tab" data-bs-toggle="tab" data-bs-target="#tab-reparto" type="button" role="tab">
+        Reparto
       </button>
     </li>
     <li class="nav-item" role="presentation">
@@ -219,10 +367,11 @@ try {
             <div class="col-md-2">
               <label class="form-label"><b>Cantidad comprada</b></label>
               <input type="number" min="1" step="1" class="form-control" id="c_cantidad" name="cantidad">
+              <div class="form-text" id="c_hint_prereserva"></div>
             </div>
             <div class="col-md-2">
-              <label class="form-label"><b>Fecha compra</b></label>
-              <input type="date" class="form-control" id="c_fecha" name="fecha_compra">
+              <label class="form-label"><b>Semana compra</b></label>
+              <input type="week" class="form-control" id="c_semana" name="semana">
             </div>
             <div class="col-12 d-flex align-items-center justify-content-between pt-2">
               <div class="text-danger small" id="c_error" style="display:none;"></div>
@@ -260,7 +409,7 @@ try {
                     <th style="width:70px;">ID</th>
                     <th class="cell-desc">Producto</th>
                     <th>Proveedor</th>
-                    <th>Fecha compra</th>
+                    <th>Semana compra</th>
                     <th class="cell-qty">Total comprado</th>
                     <th class="cell-qty">Asignado</th>
                     <th class="cell-qty">Restante</th>
@@ -273,8 +422,7 @@ try {
                 $totalAsignadoSum = 0;
                 $totalRestanteSum = 0;
                 foreach ($matriz as $row):
-                  $fechaCompraRaw = (string)($row['fecha_compra'] ?? '');
-                  $fechaCompra    = $fechaCompraRaw !== '' ? date('d/m/Y', strtotime($fechaCompraRaw)) : '';
+                  $semanaCompra = (string)($row['semana_compra_norm'] ?? '');
                   $totalComprado  = (int)$row['cantidad_comprada'];
                   $asignadoLote   = (int)$row['cantidad_asignada'];
                   $restante       = (int)$row['cantidad_disponible'];
@@ -302,7 +450,7 @@ try {
                         class="btn btn-link btn-sm p-0 btn-lineas"
                         data-producto-id="<?= (int)$row['producto_id'] ?>"
                         data-proveedor-id="<?= (int)$row['proveedor_id'] ?>"
-                        data-fecha-compra-raw="<?= h($row['fecha_compra'] ?? '') ?>"
+                        data-fecha-compra-raw="<?= h($semanaCompra) ?>"
                         title="Ver líneas de asignación"
                       >+</button>
                     </td>
@@ -310,7 +458,7 @@ try {
                     <td><?= (int)$row['producto_id'] ?></td>
                     <td class="cell-desc"><?= h($row['producto_nombre']) ?></td>
                     <td><?= h($row['proveedor_nombre']) ?></td>
-                    <td><?= h($fechaCompra) ?></td>
+                    <td><?= h($semanaCompra) ?></td>
                     <td class="cell-qty"><?= number_format($totalComprado, 0, ',', '.') ?></td>
                     <td class="cell-qty"><?= number_format($asignadoLote, 0, ',', '.') ?></td>
                     <td class="cell-qty"><?= number_format($restante, 0, ',', '.') ?></td>
@@ -338,9 +486,9 @@ try {
                 <tfoot>
                   <tr class="table-secondary fw-semibold">
                     <td colspan="6" class="text-end">Totales:</td>
-                    <td class="cell-qty">0</td>
-                    <td class="cell-qty">0</td>
-                    <td class="cell-qty">0</td>
+                    <td class="cell-qty"><?= number_format($totalCompradoSum, 0, ',', '.') ?></td>
+                    <td class="cell-qty"><?= number_format($totalAsignadoSum, 0, ',', '.') ?></td>
+                    <td class="cell-qty"><?= number_format($totalRestanteSum, 0, ',', '.') ?></td>
                     <td></td>
                   </tr>
                 </tfoot>
@@ -352,7 +500,173 @@ try {
       </div>
 
     </div>
-    <!-- TAB 3: Gestión de productos -->
+
+    <!-- TAB 3: Reparto -->
+    <div class="tab-pane fade" id="tab-reparto" role="tabpanel" aria-labelledby="tab-reparto-tab">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+            <h2 class="h6 mb-0">Reparto: productos por delegación</h2>
+            <a href="gestion_compras.php?export_reparto=1" class="btn btn-sm btn-outline-success">Exportar Excel</a>
+          </div>
+          <div class="table-responsive" style="max-height:70vh;">
+            <table class="table table-striped table-bordered table-sm align-middle table-sticky" id="tablaReparto">
+              <thead class="table-success">
+                <tr>
+                  <th style="min-width:260px;">Producto</th>
+                  <?php foreach ($delegaciones as $d): ?>
+                    <th class="cell-qty" style="min-width:120px;"><?= h($d['nombre']) ?></th>
+                  <?php endforeach; ?>
+                  <th class="cell-qty" style="min-width:120px;">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+              <?php if (empty($productosEje)): ?>
+                <tr>
+                  <td colspan="<?= count($delegaciones) + 2 ?>" class="text-center text-muted">No hay productos.</td>
+                </tr>
+              <?php else: ?>
+                <?php
+                  $totalesPorDelegacion = [];
+                  $totalGeneral = 0;
+                  foreach ($delegaciones as $d) {
+                    $totalesPorDelegacion[(int)$d['id']] = 0;
+                  }
+                ?>
+                <?php foreach ($productosEje as $pe): ?>
+                  <?php
+                    $tipo = trim((string)($pe['tipo'] ?? ''));
+                    $nombre = trim((string)($pe['nombre'] ?? ''));
+                    $proveedor = trim((string)($pe['proveedor'] ?? ''));
+                    $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
+                    $labelProducto = trim($tipo . ' - ' . $nombre, ' -');
+                    if ($proveedor !== '') {
+                      $labelProducto .= ' (' . $proveedor . ')';
+                    }
+                    $totalFila = 0;
+                  ?>
+                  <tr>
+                    <td><?= h($labelProducto) ?></td>
+                    <?php foreach ($delegaciones as $d): ?>
+                      <?php
+                        $did = (int)$d['id'];
+                        $qty = (int)($repartoMap[$keyProd][$did] ?? 0);
+                        $totalFila += $qty;
+                        $totalesPorDelegacion[$did] += $qty;
+                      ?>
+                      <td class="cell-qty"><?= $qty > 0 ? number_format($qty, 0, ',', '.') : '' ?></td>
+                    <?php endforeach; ?>
+                    <?php $totalGeneral += $totalFila; ?>
+                    <td class="cell-qty fw-semibold"><?= $totalFila > 0 ? number_format($totalFila, 0, ',', '.') : '' ?></td>
+                  </tr>
+                <?php endforeach; ?>
+              <?php endif; ?>
+              </tbody>
+              <?php if (!empty($productosEje)): ?>
+                <tfoot>
+                  <tr class="table-secondary fw-semibold">
+                    <td class="text-end">Totales:</td>
+                    <?php foreach ($delegaciones as $d): ?>
+                      <td class="cell-qty"><?= number_format((int)($totalesPorDelegacion[(int)$d['id']] ?? 0), 0, ',', '.') ?></td>
+                    <?php endforeach; ?>
+                    <td class="cell-qty"><?= number_format((int)$totalGeneral, 0, ',', '.') ?></td>
+                  </tr>
+                </tfoot>
+              <?php endif; ?>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- TAB 4: Pre-reservas -->
+    <div class="tab-pane fade" id="tab-prereservas" role="tabpanel" aria-labelledby="tab-prereservas-tab">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+            <div class="d-flex flex-column">
+              <h2 class="h6 mb-1">Pre-reservas pendientes</h2>
+              <input
+                type="text"
+                id="pr_filtro"
+                class="form-control form-control-sm search-mini"
+                placeholder="Delegación / tipo / producto / semana / cantidad"
+              >
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#modalPreReserva">Nueva Pre-reserva</button>
+          </div>
+
+          <div class="table-responsive" style="max-height:70vh;">
+            <table class="table table-striped table-bordered table-sm align-middle table-sticky" id="tablaPreReservas">
+              <thead class="table-success">
+                <tr>
+                  <th style="width:70px;">ID</th>
+                  <th>Delegación</th>
+                  <th>Tipo</th>
+                  <th>Producto</th>
+                  <th style="width:120px;" class="cell-qty">Cantidad</th>
+                  <th style="width:130px;">Semana deseada</th>
+                  <th style="width:110px;" class="text-center">Convertir</th>
+                  <th style="width:110px;" class="text-center">Eliminar</th>
+                </tr>
+              </thead>
+              <tbody>
+              <?php $preCantidadTotal = 0; ?>
+              <?php if (!$preReservas): ?>
+                <tr>
+                  <td colspan="8" class="text-center text-muted">No hay pre-reservas pendientes.</td>
+                </tr>
+              <?php else: ?>
+                <?php foreach ($preReservas as $pr): ?>
+                  <?php
+                    $fechaDeseadaRaw = (string)($pr['fecha_deseada'] ?? '');
+                    $semanaDeseada   = $fechaDeseadaRaw !== '' ? date('o-\WW', strtotime($fechaDeseadaRaw)) : '';
+                    $cantidadPre = (int)$pr['cantidad'];
+                    $preCantidadTotal += $cantidadPre;
+                  ?>
+                  <tr data-cantidad="<?= $cantidadPre ?>">
+                    <td><?= (int)$pr['id'] ?></td>
+                    <td><?= h($pr['comercial_nombre']) ?></td>
+                    <td><?= h($pr['tipo']) ?></td>
+                    <td><?= h($pr['producto_deseado']) ?></td>
+                    <td class="cell-qty"><?= number_format($cantidadPre, 0, ',', '.') ?></td>
+                    <td><?= h($semanaDeseada) ?></td>
+                    <td class="text-center">
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-outline-primary btn-convertir-pr"
+                        data-prereserva-id="<?= (int)$pr['id'] ?>"
+                        data-prereserva-delegacion="<?= h($pr['comercial_nombre']) ?>"
+                        data-prereserva-tipo="<?= h($pr['tipo']) ?>"
+                        data-prereserva-variedad="<?= h($pr['producto_deseado']) ?>"
+                        data-prereserva-cantidad="<?= (int)$pr['cantidad'] ?>"
+                      >Convertir</button>
+                    </td>
+                    <td class="text-center">
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-outline-danger btn-eliminar-pr"
+                        data-prereserva-id="<?= (int)$pr['id'] ?>"
+                      >Eliminar</button>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              <?php endif; ?>
+              </tbody>
+              <?php if ($preReservas): ?>
+              <tfoot>
+                <tr class="table-secondary fw-semibold">
+                  <td colspan="4" class="text-end">Totales:</td>
+                  <td class="cell-qty" id="pr_total_cantidad"><?= number_format($preCantidadTotal, 0, ',', '.') ?></td>
+                  <td colspan="3"></td>
+                </tr>
+              </tfoot>
+              <?php endif; ?>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="tab-pane fade" id="tab-productos" role="tabpanel" aria-labelledby="tab-productos-tab">
       <div class="row g-3 mb-3">
         <div class="col-lg-5">
@@ -372,6 +686,10 @@ try {
                 <div class="mb-2">
                   <label class="form-label mb-1"><b>Nombre</b></label>
                   <input type="text" id="p_nombre" name="nombre" class="form-control form-control-sm" required>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label mb-1"><b>Código ERP (Velneo)</b></label>
+                  <input type="text" id="p_codigo_velneo" name="codigo_velneo" class="form-control form-control-sm" maxlength="64">
                 </div>
                 <div class="mb-2">
                   <label class="form-label mb-1"><b>Proveedor</b></label>
@@ -396,7 +714,7 @@ try {
               <div class="d-flex align-items-end justify-content-between mb-2 flex-wrap gap-2">
                 <div class="d-flex flex-column">
                   <label for="p_filtro" class="form-label mb-1 small text-muted"><b>Buscar productos</b></label>
-                  <input type="text" id="p_filtro" class="form-control form-control-sm search-mini" placeholder="Tipo / nombre / proveedor">
+                  <input type="text" id="p_filtro" class="form-control form-control-sm search-mini" placeholder="Código / tipo / nombre / proveedor">
                 </div>
               </div>
               <div class="table-responsive" style="max-height:70vh;">
@@ -404,6 +722,7 @@ try {
                   <thead class="table-success">
                     <tr>
                       <th style="width:70px;">ID</th>
+                      <th style="width:170px;">Código ERP</th>
                       <th>Tipo</th>
                       <th class="cell-desc">Nombre</th>
                       <th>Proveedor</th>
@@ -418,6 +737,7 @@ try {
                     <?php foreach ($productos as $p): ?>
                       <tr>
                         <td><?= (int)$p['id'] ?></td>
+                        <td><?= h($p['codigo_velneo'] ?? '') ?></td>
                         <td><?= h($p['tipo']) ?></td>
                         <td class="cell-desc"><?= h($p['nombre']) ?></td>
                         <td><?= h($p['proveedor']) ?></td>
@@ -592,8 +912,8 @@ try {
             <input type="number" min="1" step="1" id="a_cantidad" name="cantidad" class="form-control" required>
           </div>
           <div class="mb-0">
-            <label class="form-label"><b>Fecha salida</b></label>
-            <input type="date" id="a_fecha" name="fecha_salida" class="form-control">
+            <label class="form-label"><b>Semana salida</b></label>
+            <input type="week" id="a_semana" name="semana_salida" class="form-control">
           </div>
         </div>
         <div class="modal-footer">
@@ -606,13 +926,127 @@ try {
   </div>
 </div>
 
+<!-- MODAL NUEVA PRE-RESERVA -->
+<div class="modal fade" id="modalPreReserva" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="formPreReserva" autocomplete="off">
+        <div class="modal-header">
+          <h5 class="modal-title">Nueva pre-reserva</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label"><b>Delegación</b></label>
+            <div class="autocomplete-wrap">
+              <input type="text" id="pr_delegacion_nombre" class="form-control" placeholder="Escribe para buscar…">
+              <input type="hidden" id="pr_delegacion_id" name="delegacion_id">
+              <div class="autocomplete-list d-none" id="pr_delegacion_list"></div>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label"><b>Producto</b></label>
+            <div class="autocomplete-wrap">
+              <input type="text" id="pr_producto_nombre" class="form-control" placeholder="Escribe para buscar…">
+              <input type="hidden" id="pr_producto_id" name="producto_id">
+              <div class="autocomplete-list d-none" id="pr_producto_list"></div>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label"><b>Cantidad</b></label>
+            <input type="number" min="1" step="1" id="pr_cantidad" name="cantidad" class="form-control" required>
+          </div>
+          <div class="mb-0">
+            <label class="form-label"><b>Semana deseada</b></label>
+            <input type="week" id="pr_semana_deseada" name="semana_deseada" class="form-control" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <div class="me-auto text-danger small" id="pr_error" style="display:none;"></div>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button class="btn btn-primary" type="submit">Guardar pre-reserva</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL CONVERTIR PRE-RESERVA -->
+<div class="modal fade" id="modalConvertirPreReserva" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="formConvertirPreReserva" autocomplete="off">
+        <div class="modal-header">
+          <h5 class="modal-title">Convertir pre-reserva</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="cp_pre_reserva_id" name="pre_reserva_id">
+          <div class="mb-2 small text-muted">
+            <div><b>Delegación:</b> <span id="cp_delegacion_label">-</span></div>
+            <div><b>Tipo:</b> <span id="cp_tipo_label">-</span></div>
+            <div><b>Variedad:</b> <span id="cp_variedad_label">-</span></div>
+            <div><b>Cantidad:</b> <span id="cp_cantidad_label">0</span></div>
+          </div>
+          <div class="mt-2">
+            <label class="form-label"><b>Reparto por proveedor</b></label>
+            <div id="cp_split_rows" class="d-flex flex-column gap-2"></div>
+            <div class="mt-2 d-flex align-items-center justify-content-between">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="cp_add_split_row">Añadir proveedor</button>
+              <span class="small text-muted" id="cp_split_total_info"></span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <div class="me-auto text-danger small" id="cp_error" style="display:none;"></div>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button class="btn btn-primary" type="submit">Convertir</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <script>
 const API_SEARCH = new URL('api_search.php', location.href).toString();
 const nf         = new Intl.NumberFormat('es-ES');
+const PRE_RESERVA_BY_PRODUCT = <?= json_encode($preReservasPendPorProducto ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 let mostrarCerradasAntiguas = false;
 
 function debounce(fn, ms){
   let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); };
+}
+function getCurrentIsoWeek(){
+  const now = new Date();
+  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const day = weekStart.getUTCDay() || 7;
+  weekStart.setUTCDate(weekStart.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(weekStart.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((weekStart - yearStart) / 86400000) + 1) / 7);
+  return `${weekStart.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+function updateCompraGhostForProducto(productoNombre){
+  const cantidadInput = document.getElementById('c_cantidad');
+  const hint = document.getElementById('c_hint_prereserva');
+  if (!cantidadInput || !hint) return;
+
+  const nombre = (productoNombre || '').trim();
+  if (!nombre) {
+    cantidadInput.placeholder = '';
+    hint.textContent = '';
+    return;
+  }
+
+  const key = nombre.toLocaleLowerCase('es-ES');
+  const pendiente = parseInt(PRE_RESERVA_BY_PRODUCT[key] || 0, 10) || 0;
+
+  if (pendiente > 0) {
+    cantidadInput.placeholder = `Sugerido: ${nf.format(pendiente)}`;
+    hint.textContent = `Pre-reservas pendientes de ${nombre}: ${nf.format(pendiente)}`;
+  } else {
+    cantidadInput.placeholder = '';
+    hint.textContent = `Sin pre-reservas pendientes de ${nombre}.`;
+  }
 }
 function createAutocomplete({input, hidden, list, type}) {
   let current = [], active = -1;
@@ -640,6 +1074,7 @@ function createAutocomplete({input, hidden, list, type}) {
         if (type === 'producto' && input.id === 'c_producto_nombre') {
           hidden.value = ''; // se resolverá en el backend con nombre+proveedor
           loadProveedoresForProducto(it.nombre);
+          updateCompraGhostForProducto(it.nombre);
         } else {
           hidden.value = it.id;
         }
@@ -710,10 +1145,10 @@ function updateMatrizTotals(){
     sumRestante += restante;
   });
 
-  const cells = tfoot.querySelectorAll('td');
-  if (cells[6]) cells[6].textContent = nf.format(sumComprado);
-  if (cells[7]) cells[7].textContent = nf.format(sumAsignado);
-  if (cells[8]) cells[8].textContent = nf.format(sumRestante);
+  const qtyCells = tfoot.querySelectorAll('td.cell-qty');
+  if (qtyCells[0]) qtyCells[0].textContent = nf.format(sumComprado);
+  if (qtyCells[1]) qtyCells[1].textContent = nf.format(sumAsignado);
+  if (qtyCells[2]) qtyCells[2].textContent = nf.format(sumRestante);
 }
 
 function applyTextFilter(){
@@ -788,6 +1223,92 @@ async function loadProveedoresForProducto(productoNombre){
   }
 }
 
+// Cargar proveedores para conversión de pre-reserva según nombre de producto
+async function loadProveedoresForConversion(productoNombre){
+  if (!window.__cpProvidersCache) window.__cpProvidersCache = [];
+
+  if (!productoNombre){
+    window.__cpProvidersCache = [];
+    return;
+  }
+
+  try{
+    const url = new URL('api_proveedores_producto.php', location.href);
+    url.searchParams.set('producto_nombre', productoNombre);
+    const res = await fetch(url.toString(), {headers:{'Accept':'application/json'}});
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    window.__cpProvidersCache = Array.isArray(data) ? data : [];
+    refreshConvertSplitProviderOptions();
+  }catch(e){
+    console.error('Error cargando proveedores para conversión', e);
+    window.__cpProvidersCache = [];
+    refreshConvertSplitProviderOptions();
+  }
+}
+
+function getConvertProviders(){
+  return Array.isArray(window.__cpProvidersCache) ? window.__cpProvidersCache : [];
+}
+
+function refreshConvertSplitProviderOptions(){
+  const providers = getConvertProviders();
+  document.querySelectorAll('#cp_split_rows .cp-proveedor').forEach(sel=>{
+    const selected = sel.value || '';
+    sel.innerHTML = '<option value="">Selecciona proveedor…</option>';
+    providers.forEach(p=>{
+      const opt = document.createElement('option');
+      opt.value = String(p.id);
+      const disponible = parseInt(p.disponible || 0, 10) || 0;
+      opt.textContent = `${p.nombre} (disp: ${nf.format(disponible)})`;
+      sel.appendChild(opt);
+    });
+    if (selected) {
+      sel.value = selected;
+    }
+  });
+}
+
+function addConvertSplitRow(defaultProveedorId = '', defaultCantidad = ''){
+  const rowsEl = document.getElementById('cp_split_rows');
+  if (!rowsEl) return;
+
+  const row = document.createElement('div');
+  row.className = 'cp-split-row row g-2 align-items-center';
+  row.innerHTML = `
+    <div class="col-7">
+      <select class="form-select cp-proveedor">
+        <option value="">Selecciona proveedor…</option>
+      </select>
+    </div>
+    <div class="col-3">
+      <input type="number" min="1" step="1" class="form-control cp-cantidad" placeholder="Cantidad">
+    </div>
+    <div class="col-2 text-end">
+      <button type="button" class="btn btn-sm btn-outline-danger cp-remove-row">Quitar</button>
+    </div>
+  `;
+  rowsEl.appendChild(row);
+  refreshConvertSplitProviderOptions();
+  row.querySelector('.cp-proveedor').value = defaultProveedorId ? String(defaultProveedorId) : '';
+  row.querySelector('.cp-cantidad').value = defaultCantidad ? String(defaultCantidad) : '';
+  updateConvertSplitInfo();
+}
+
+function updateConvertSplitInfo(){
+  const infoEl = document.getElementById('cp_split_total_info');
+  const objetivoLbl = document.getElementById('cp_cantidad_label');
+  if (!infoEl || !objetivoLbl) return;
+
+  const objetivo = parseInt((objetivoLbl.textContent || '0').replace(/[^\d]/g, ''), 10) || 0;
+  let asignado = 0;
+  document.querySelectorAll('#cp_split_rows .cp-cantidad').forEach(inp=>{
+    asignado += parseInt(inp.value || '0', 10) || 0;
+  });
+  infoEl.textContent = `Asignado: ${nf.format(asignado)} / ${nf.format(objetivo)}`;
+  infoEl.classList.toggle('text-danger', asignado !== objetivo);
+}
+
 // Insertar / quitar fila de detalle de líneas de asignación en la matriz
 async function toggleLineasForRow(btn){
   const tr = btn.closest('tr');
@@ -802,7 +1323,7 @@ async function toggleLineasForRow(btn){
 
   const productoId  = parseInt(btn.getAttribute('data-producto-id')  || '0', 10) || 0;
   const proveedorId = parseInt(btn.getAttribute('data-proveedor-id') || '0', 10) || 0;
-  const fechaCompra = btn.getAttribute('data-fecha-compra-raw') || '';
+  const semanaCompra = btn.getAttribute('data-fecha-compra-raw') || '';
 
   const detalleTr = document.createElement('tr');
   detalleTr.className = 'fila-lineas-asig';
@@ -821,8 +1342,10 @@ async function toggleLineasForRow(btn){
     const url = new URL('api_asignaciones_linea.php', location.href);
     url.searchParams.set('producto_id',  String(productoId));
     url.searchParams.set('proveedor_id', String(proveedorId));
-    if (fechaCompra) {
-      url.searchParams.set('fecha_compra', fechaCompra);
+    if (semanaCompra) {
+      url.searchParams.set('semana', semanaCompra);
+      // compatibilidad con backend legacy
+      url.searchParams.set('fecha_compra', semanaCompra);
     }
     const res = await fetch(url.toString(), {headers:{'Accept':'application/json'}});
     if (!res.ok) throw new Error('HTTP '+res.status);
@@ -843,7 +1366,7 @@ async function toggleLineasForRow(btn){
                 <th style="width:70px;">ID</th>
                 <th>Delegación</th>
                 <th class="text-end" style="width:120px;">Cantidad</th>
-                <th style="width:120px;">Fecha salida</th>
+                <th style="width:120px;">Semana salida</th>
                 <th style="width:170px;">Creada</th>
               </tr>
             </thead>
@@ -855,7 +1378,7 @@ async function toggleLineasForRow(btn){
       const id   = a.id || '';
       const del  = a.delegacion || '';
       const cant = nfLocal.format(Number(a.cantidad_asignada||0));
-      const fs   = a.fecha_salida || '';
+      const fs   = a.semana_salida || '';
       const cr   = a.created_at || '';
       html += `
         <tr>
@@ -883,6 +1406,36 @@ async function toggleLineasForRow(btn){
 }
 
 document.addEventListener('DOMContentLoaded', ()=>{
+  const cSemanaInput = document.getElementById('c_semana');
+  if (cSemanaInput && !cSemanaInput.value) {
+    cSemanaInput.value = getCurrentIsoWeek();
+  }
+  const cProductoInput = document.getElementById('c_producto_nombre');
+  if (cProductoInput) {
+    updateCompraGhostForProducto(cProductoInput.value);
+    cProductoInput.addEventListener('input', ()=>{
+      updateCompraGhostForProducto(cProductoInput.value);
+    });
+  }
+
+  const ACTIVE_TAB_KEY = 'gestion_compras_active_tab';
+  const savedTabTarget = sessionStorage.getItem(ACTIVE_TAB_KEY);
+  if (savedTabTarget) {
+    const savedTabBtn = document.querySelector(`[data-bs-target="${savedTabTarget}"]`);
+    if (savedTabBtn) {
+      const tab = bootstrap.Tab.getOrCreateInstance(savedTabBtn);
+      tab.show();
+    }
+  }
+  document.querySelectorAll('#tabsCompras [data-bs-toggle="tab"]').forEach(tabBtn => {
+    tabBtn.addEventListener('shown.bs.tab', (ev) => {
+      const target = ev.target?.getAttribute('data-bs-target');
+      if (target) {
+        sessionStorage.setItem(ACTIVE_TAB_KEY, target);
+      }
+    });
+  });
+
   // Autocomplete registrar compra
   createAutocomplete({
     input:  document.getElementById('c_producto_nombre'),
@@ -905,6 +1458,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
     hidden: document.getElementById('p_proveedor_id'),
     list:   document.getElementById('p_proveedor_list'),
     type:   'proveedor'
+  });
+
+  // Autocomplete delegación y producto en modal de pre-reserva
+  createAutocomplete({
+    input:  document.getElementById('pr_delegacion_nombre'),
+    hidden: document.getElementById('pr_delegacion_id'),
+    list:   document.getElementById('pr_delegacion_list'),
+    type:   'delegacion'
+  });
+  createAutocomplete({
+    input:  document.getElementById('pr_producto_nombre'),
+    hidden: document.getElementById('pr_producto_id'),
+    list:   document.getElementById('pr_producto_list'),
+    type:   'producto'
   });
 
   // Filtro de texto para matriz
@@ -941,13 +1508,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const producto_nombre = (document.getElementById('c_producto_nombre').value||'').trim();
       const proveedor_id = parseInt(document.getElementById('c_proveedor_id').value||'0',10);
       const cantidad     = parseInt(document.getElementById('c_cantidad').value||'0',10);
-      const fecha        = (document.getElementById('c_fecha').value||'').trim();
+      const semana       = (document.getElementById('c_semana').value||'').trim();
 
       const errs=[];
       if(!producto_nombre)  errs.push('Selecciona un producto válido.');
       if(!proveedor_id) errs.push('Selecciona un proveedor válido.');
       if(!cantidad || cantidad<=0) errs.push('Cantidad debe ser > 0.');
-      if(!fecha) errs.push('Selecciona una fecha de compra.');
+      if(!semana) errs.push('Selecciona una semana de compra.');
 
       if(errs.length){
         cErrEl.textContent = errs.join(' | ');
@@ -958,7 +1525,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         const res = await fetch('save_compra.php', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ producto_nombre, proveedor_id, cantidad, fecha_compra: fecha })
+          body: JSON.stringify({ producto_nombre, proveedor_id, cantidad, semana })
         });
         let data=null, txt='';
         try { data = await res.json(); } catch(_){ txt = await res.text(); }
@@ -989,8 +1556,67 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const aProvId   = document.getElementById('a_proveedor_id');
   const aRestLbl  = document.getElementById('a_restante_label');
   const aCant     = document.getElementById('a_cantidad');
-  const aFecha    = document.getElementById('a_fecha');
+  const aSemana   = document.getElementById('a_semana');
   const aErrEl    = document.getElementById('a_error');
+  const modalPreReserva = new bootstrap.Modal(document.getElementById('modalPreReserva'));
+  const formPreReserva  = document.getElementById('formPreReserva');
+  const prErrEl         = document.getElementById('pr_error');
+  const prDelegacionIdEl= document.getElementById('pr_delegacion_id');
+  const prProductoIdEl  = document.getElementById('pr_producto_id');
+  const prProductoNombreEl = document.getElementById('pr_producto_nombre');
+  const prCantidadEl    = document.getElementById('pr_cantidad');
+  const prSemanaEl      = document.getElementById('pr_semana_deseada');
+  const modalConvertirPre = new bootstrap.Modal(document.getElementById('modalConvertirPreReserva'));
+  const formConvertirPre  = document.getElementById('formConvertirPreReserva');
+  const cpErrEl           = document.getElementById('cp_error');
+  const cpPreIdEl         = document.getElementById('cp_pre_reserva_id');
+  const cpDelegacionLbl   = document.getElementById('cp_delegacion_label');
+  const cpTipoLbl         = document.getElementById('cp_tipo_label');
+  const cpVariedadLbl     = document.getElementById('cp_variedad_label');
+  const cpCantidadLbl     = document.getElementById('cp_cantidad_label');
+  const cpSplitRowsEl     = document.getElementById('cp_split_rows');
+  const cpAddSplitRowBtn  = document.getElementById('cp_add_split_row');
+
+  // Apertura explícita del modal de pre-reserva (fallback robusto)
+  document.querySelectorAll('[data-bs-target="#modalPreReserva"]').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.preventDefault();
+      prErrEl.style.display = 'none';
+      prErrEl.textContent = '';
+      formPreReserva?.reset();
+      document.getElementById('pr_delegacion_id').value = '';
+      document.getElementById('pr_producto_id').value = '';
+      if (prSemanaEl && !prSemanaEl.value) {
+        const now = new Date();
+        const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const day = weekStart.getUTCDay() || 7;
+        weekStart.setUTCDate(weekStart.getUTCDate() + 4 - day);
+        const yearStart = new Date(Date.UTC(weekStart.getUTCFullYear(), 0, 1));
+        const weekNo = Math.ceil((((weekStart - yearStart) / 86400000) + 1) / 7);
+        prSemanaEl.value = `${weekStart.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+      }
+      modalPreReserva.show();
+    });
+  });
+
+  cpAddSplitRowBtn?.addEventListener('click', ()=>{
+    addConvertSplitRow();
+  });
+  cpSplitRowsEl?.addEventListener('input', (ev)=>{
+    if (ev.target && ev.target.classList.contains('cp-cantidad')) {
+      updateConvertSplitInfo();
+    }
+  });
+  cpSplitRowsEl?.addEventListener('click', (ev)=>{
+    const btn = ev.target?.closest('.cp-remove-row');
+    if (!btn) return;
+    const rows = cpSplitRowsEl.querySelectorAll('.cp-split-row');
+    if (rows.length <= 1) {
+      return;
+    }
+    btn.closest('.cp-split-row')?.remove();
+    updateConvertSplitInfo();
+  });
 
   document.querySelectorAll('.btn-asignar').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -1009,7 +1635,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
       aCant.max   = String(Math.max(0, restante));
       aCant.dataset.restante = String(Math.max(0, restante));
       aCant.placeholder = restante>0 ? `Máximo ${restante}` : 'Sin stock';
-      aFecha.value = new Date().toISOString().slice(0,10);
+      const now = new Date();
+      const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const day = weekStart.getUTCDay() || 7;
+      weekStart.setUTCDate(weekStart.getUTCDate() + 4 - day);
+      const yearStart = new Date(Date.UTC(weekStart.getUTCFullYear(), 0, 1));
+      const weekNo = Math.ceil((((weekStart - yearStart) / 86400000) + 1) / 7);
+      aSemana.value = `${weekStart.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 
       aErrEl.style.display='none'; aErrEl.textContent='';
       document.getElementById('a_delegacion_nombre').value='';
@@ -1036,14 +1668,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const proveedor_id  = parseInt(aProvId.value||'0',10);
     const delegacion_id = parseInt(document.getElementById('a_delegacion_id').value||'0',10);
     const cantidad      = parseInt(aCant.value||'0',10);
-    const fecha_salida  = (aFecha.value||'').trim();
+    const semana_salida = (aSemana.value||'').trim();
 
     const errs = [];
     if(!producto_id)   errs.push('Producto inválido.');
     if(!proveedor_id)  errs.push('Proveedor inválido.');
     if(!delegacion_id) errs.push('Selecciona una delegación.');
     if(!cantidad || cantidad<=0) errs.push('Cantidad debe ser > 0.');
-    if(!fecha_salida) errs.push('Selecciona una fecha de salida.');
+    if(!semana_salida) errs.push('Selecciona una semana de salida.');
 
     const restanteSel = parseInt(aCant.dataset.restante || '0', 10) || 0;
     if (cantidad > restanteSel) {
@@ -1060,7 +1692,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const res = await fetch('save_asignacion.php', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ producto_id, proveedor_id, delegacion_id, cantidad, fecha_salida })
+        body: JSON.stringify({ producto_id, proveedor_id, delegacion_id, cantidad, semana_salida })
       });
       let data=null, txt='';
       try { data = await res.json(); } catch(_){ txt = await res.text(); }
@@ -1082,7 +1714,232 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   });
 
+  // Guardar pre-reserva (Fetch -> save_prereserva.php)
+  if (formPreReserva){
+    formPreReserva.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      prErrEl.style.display = 'none';
+      prErrEl.textContent = '';
+
+      const delegacion_id = parseInt(prDelegacionIdEl.value || '0', 10);
+      const producto_id = parseInt(prProductoIdEl.value || '0', 10);
+      const producto_deseado = (prProductoNombreEl.value || '').trim();
+      const cantidad = parseInt(prCantidadEl.value || '0', 10);
+      const semana_deseada = (prSemanaEl.value || '').trim();
+
+      const errs = [];
+      if (!delegacion_id) errs.push('Selecciona una delegación válida.');
+      if (!producto_deseado) errs.push('Indica un producto.');
+      if (!cantidad || cantidad <= 0) errs.push('Cantidad debe ser > 0.');
+      if (!semana_deseada) errs.push('Semana deseada requerida.');
+
+      if (errs.length) {
+        prErrEl.textContent = errs.join(' | ');
+        prErrEl.style.display = 'block';
+        return;
+      }
+
+      try {
+        const res = await fetch('save_prereserva.php', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ delegacion_id, producto_id, producto_deseado, cantidad, semana_deseada })
+        });
+        let data = null, txt = '';
+        try { data = await res.json(); } catch(_) { txt = await res.text(); }
+
+        if (res.ok && data && data.ok) {
+          modalPreReserva.hide();
+          sessionStorage.setItem(ACTIVE_TAB_KEY, '#tab-prereservas');
+          location.reload();
+        } else {
+          const msg = (data && (data.errors || data.error))
+            ? (Array.isArray(data.errors) ? data.errors.join(' | ') : data.error)
+            : (txt || 'No se pudo guardar la pre-reserva.');
+          prErrEl.textContent = msg;
+          prErrEl.style.display = 'block';
+        }
+      } catch (err) {
+        console.error(err);
+        prErrEl.textContent = 'Error de red.';
+        prErrEl.style.display = 'block';
+      }
+    });
+  }
+
+  // Abrir modal de conversión desde tabla de pre-reservas
+  document.querySelectorAll('.btn-convertir-pr').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      cpErrEl.style.display = 'none';
+      cpErrEl.textContent = '';
+      cpPreIdEl.value = btn.getAttribute('data-prereserva-id') || '';
+      cpDelegacionLbl.textContent = btn.getAttribute('data-prereserva-delegacion') || '-';
+      cpTipoLbl.textContent = btn.getAttribute('data-prereserva-tipo') || '-';
+      cpVariedadLbl.textContent = btn.getAttribute('data-prereserva-variedad') || '-';
+      cpCantidadLbl.textContent = btn.getAttribute('data-prereserva-cantidad') || '0';
+      if (cpSplitRowsEl) {
+        cpSplitRowsEl.innerHTML = '';
+      }
+      addConvertSplitRow('', cpCantidadLbl.textContent || '');
+      const variedad = (btn.getAttribute('data-prereserva-variedad') || '').trim();
+      if (variedad) {
+        loadProveedoresForConversion(variedad);
+      } else {
+        refreshConvertSplitProviderOptions();
+      }
+      updateConvertSplitInfo();
+      modalConvertirPre.show();
+    });
+  });
+
+  // Eliminar pre-reserva (cancelación lógica)
+  document.querySelectorAll('.btn-eliminar-pr').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const pre_reserva_id = parseInt(btn.getAttribute('data-prereserva-id') || '0', 10);
+      if (!pre_reserva_id) return;
+
+      const ok = window.confirm(`¿Eliminar la pre-reserva #${pre_reserva_id}?`);
+      if (!ok) return;
+
+      try {
+        const res = await fetch('delete_prereserva.php', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ pre_reserva_id })
+        });
+        let data = null, txt = '';
+        try { data = await res.json(); } catch(_) { txt = await res.text(); }
+
+        if (res.ok && data && data.ok) {
+          location.reload();
+        } else {
+          const msg = (data && (data.errors || data.error))
+            ? (Array.isArray(data.errors) ? data.errors.join(' | ') : data.error)
+            : (txt || 'No se pudo eliminar la pre-reserva.');
+          alert(msg);
+        }
+      } catch (err) {
+        console.error(err);
+        alert('Error de red al eliminar la pre-reserva.');
+      }
+    });
+  });
+
+  // Convertir pre-reserva (Fetch -> convertir_prereserva.php)
+  if (formConvertirPre){
+    formConvertirPre.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      cpErrEl.style.display = 'none';
+      cpErrEl.textContent = '';
+
+      const pre_reserva_id = parseInt(cpPreIdEl.value || '0', 10);
+      const cantidadObjetivo = parseInt((cpCantidadLbl.textContent || '0').replace(/[^\d]/g, ''), 10) || 0;
+      const resumen = new Map();
+      (cpSplitRowsEl?.querySelectorAll('.cp-split-row') || []).forEach(row=>{
+        const proveedor_id = parseInt(row.querySelector('.cp-proveedor')?.value || '0', 10);
+        const cantidad = parseInt(row.querySelector('.cp-cantidad')?.value || '0', 10);
+        if (!proveedor_id && !cantidad) return;
+        if (!proveedor_id || cantidad <= 0) return;
+        resumen.set(proveedor_id, (resumen.get(proveedor_id) || 0) + cantidad);
+      });
+      const asignaciones = Array.from(resumen.entries()).map(([proveedor_id, cantidad]) => ({ proveedor_id, cantidad }));
+      const totalAsignado = asignaciones.reduce((acc, x) => acc + (x.cantidad || 0), 0);
+      const errs = [];
+      if (!pre_reserva_id) errs.push('Pre-reserva invalida.');
+      if (!asignaciones.length) errs.push('Añade al menos un proveedor con cantidad.');
+      if (totalAsignado !== cantidadObjetivo) {
+        errs.push(`El reparto debe sumar exactamente ${cantidadObjetivo}.`);
+      }
+
+      if (errs.length) {
+        cpErrEl.textContent = errs.join(' | ');
+        cpErrEl.style.display = 'block';
+        return;
+      }
+
+      try {
+        const res = await fetch('convertir_prereserva.php', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ pre_reserva_id, asignaciones })
+        });
+        let data = null, txt = '';
+        try { data = await res.json(); } catch(_) { txt = await res.text(); }
+
+        if (res.ok && data && data.ok) {
+          modalConvertirPre.hide();
+          location.reload();
+        } else {
+          const msg = (data && (data.errors || data.error))
+            ? (Array.isArray(data.errors) ? data.errors.join(' | ') : data.error)
+            : (txt || 'No se pudo convertir la pre-reserva.');
+          cpErrEl.textContent = msg;
+          cpErrEl.style.display = 'block';
+        }
+      } catch (err) {
+        console.error(err);
+        cpErrEl.textContent = 'Error de red.';
+        cpErrEl.style.display = 'block';
+      }
+    });
+  }
+
   // ====== Pestaña Productos: filtro y alta ======
+  const prFiltro = document.getElementById('pr_filtro');
+  const tablaPreReservas = document.getElementById('tablaPreReservas');
+  const prTotalCantidadEl = document.getElementById('pr_total_cantidad');
+
+  function updatePreReservasTotals(){
+    if (!tablaPreReservas || !prTotalCantidadEl) return;
+    let totalCantidad = 0;
+
+    tablaPreReservas.querySelectorAll('tbody tr').forEach(tr=>{
+      const tds = tr.querySelectorAll('td,th');
+      if (tds.length < 8) return;
+      if (getComputedStyle(tr).display === 'none') return;
+      totalCantidad += parseInt(tr.getAttribute('data-cantidad') || '0', 10) || 0;
+    });
+
+    prTotalCantidadEl.textContent = nf.format(totalCantidad);
+  }
+
+  function applyPreReservasFilter(){
+    if (!tablaPreReservas) return;
+    const term = (prFiltro?.value || '').trim().toLowerCase();
+
+    tablaPreReservas.querySelectorAll('tbody tr').forEach(tr=>{
+      const tds = tr.querySelectorAll('td,th');
+      // Fila de estado vacía: "No hay pre-reservas pendientes."
+      if (tds.length < 8) {
+        tr.style.display = term ? 'none' : '';
+        return;
+      }
+
+      const id = (tds[0].textContent || '').toLowerCase();
+      const delegacion = (tds[1].textContent || '').toLowerCase();
+      const tipo = (tds[2].textContent || '').toLowerCase();
+      const producto = (tds[3].textContent || '').toLowerCase();
+      const cantidad = (tds[4].textContent || '').toLowerCase();
+      const semana = (tds[5].textContent || '').toLowerCase();
+
+      const match = !term
+        || id.includes(term)
+        || delegacion.includes(term)
+        || tipo.includes(term)
+        || producto.includes(term)
+        || cantidad.includes(term)
+        || semana.includes(term);
+
+      tr.style.display = match ? '' : 'none';
+    });
+    updatePreReservasTotals();
+  }
+
+  if (prFiltro){
+    prFiltro.addEventListener('input', debounce(applyPreReservasFilter, 120));
+  }
+  applyPreReservasFilter();
+
   const pFiltro = document.getElementById('p_filtro');
   const tablaProductos = document.getElementById('tablaProductos');
   const pErrEl = document.getElementById('p_error');
@@ -1092,12 +1949,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const term = (pFiltro?.value || '').trim().toLowerCase();
     tablaProductos.querySelectorAll('tbody tr').forEach(tr=>{
       const tds = tr.querySelectorAll('td,th');
-      if (tds.length < 4){ tr.style.display=''; return; }
+      if (tds.length < 5){ tr.style.display=''; return; }
       const id    = (tds[0].textContent||'').toLowerCase();
-      const tipo  = (tds[1].textContent||'').toLowerCase();
-      const nombre= (tds[2].textContent||'').toLowerCase();
-      const prov  = (tds[3].textContent||'').toLowerCase();
-      const match = !term || id.includes(term) || tipo.includes(term) || nombre.includes(term) || prov.includes(term);
+      const codigo= (tds[1].textContent||'').toLowerCase();
+      const tipo  = (tds[2].textContent||'').toLowerCase();
+      const nombre= (tds[3].textContent||'').toLowerCase();
+      const prov  = (tds[4].textContent||'').toLowerCase();
+      const match = !term || id.includes(term) || codigo.includes(term) || tipo.includes(term) || nombre.includes(term) || prov.includes(term);
       tr.style.display = match ? '' : 'none';
     });
   }
@@ -1115,6 +1973,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
       const tipo_id   = parseInt(document.getElementById('p_tipo_id')?.value || '0', 10) || 0;
       const nombre    = (document.getElementById('p_nombre')?.value || '').trim();
+      const codigo_velneo = (document.getElementById('p_codigo_velneo')?.value || '').trim();
       const proveedor_id = parseInt(document.getElementById('p_proveedor_id')?.value || '0', 10) || 0;
 
       const errs = [];
@@ -1134,7 +1993,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         const res = await fetch('save_producto.php', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ tipo_id, nombre, proveedor_id })
+          body: JSON.stringify({ tipo_id, nombre, codigo_velneo, proveedor_id })
         });
         let data=null, txt='';
         try { data = await res.json(); } catch(_){ txt = await res.text(); }
@@ -1307,4 +2166,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
+
+
 

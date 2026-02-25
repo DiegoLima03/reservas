@@ -25,12 +25,28 @@ $producto_nombre = trim((string)($input['producto_nombre'] ?? ''));
 $proveedor_id  = (int)($input['proveedor_id']  ?? 0);
 $cantidad      = (int)($input['cantidad']      ?? 0);
 $fecha_compra  = trim((string)($input['fecha_compra'] ?? ''));
+$semana        = trim((string)($input['semana'] ?? ''));
+
+if ($semana === '' && $fecha_compra !== '') {
+  // Compatibilidad: convertir fecha YYYY-MM-DD a semana ISO YYYY-WNN
+  if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha_compra)) {
+    $ts = strtotime($fecha_compra);
+    if ($ts !== false) {
+      $semana = date('o-\WW', $ts);
+    }
+  } else {
+    $semana = $fecha_compra;
+  }
+}
 
 $errors = [];
 if ($producto_nombre === '') $errors[] = "Nombre de producto vacío o no válido";
 if ($proveedor_id <= 0) $errors[] = "proveedor_id vacío o no válido";
 if ($cantidad     <= 0) $errors[] = "cantidad debe ser > 0";
-if ($fecha_compra === '') $errors[] = "fecha_compra requerida (YYYY-MM-DD)";
+if ($semana === '') $errors[] = "semana requerida (YYYY-WNN)";
+if ($semana !== '' && !preg_match('/^\d{4}-W\d{2}$/', $semana)) {
+  $errors[] = "semana inválida (YYYY-WNN)";
+}
 
 if ($errors) {
   echo json_encode(['ok' => false, 'errors' => $errors], JSON_UNESCAPED_UNICODE);
@@ -70,9 +86,9 @@ try {
   // Insertar compra (entrada de stock)
   $sql = "
     INSERT INTO compras_stock
-      (producto_id, proveedor_id, cantidad_comprada, cantidad_disponible, fecha_compra)
+      (producto_id, proveedor_id, cantidad_comprada, cantidad_disponible, semana)
     VALUES
-      (:producto_id, :proveedor_id, :cantidad_comprada, :cantidad_disponible, :fecha_compra)
+      (:producto_id, :proveedor_id, :cantidad_comprada, :cantidad_disponible, :semana)
   ";
 
   $stmt = $pdo->prepare($sql);
@@ -81,7 +97,7 @@ try {
     ':proveedor_id'       => $proveedor_id,
     ':cantidad_comprada'  => $cantidad,
     ':cantidad_disponible'=> $cantidad,
-    ':fecha_compra'       => $fecha_compra,
+    ':semana'             => $semana,
   ]);
 
   if (!$ok) {
@@ -108,4 +124,3 @@ try {
     'error' => $e->getMessage(),
   ], JSON_UNESCAPED_UNICODE);
 }
-

@@ -22,6 +22,7 @@ if (empty($input)) {
 
 $tipo_id       = isset($input['tipo_id']) ? (int)$input['tipo_id'] : 0;
 $nombre        = trim((string)($input['nombre']    ?? ''));
+$codigo_velneo = trim((string)($input['codigo_velneo'] ?? ''));
 $proveedor_id  = isset($input['proveedor_id']) ? (int)$input['proveedor_id'] : 0;
 
 $errors = [];
@@ -33,6 +34,9 @@ if ($nombre === '') {
 }
 if ($proveedor_id <= 0) {
   $errors[] = 'proveedor_id requerido';
+}
+if ($codigo_velneo !== '' && mb_strlen($codigo_velneo, 'UTF-8') > 64) {
+  $errors[] = 'codigo_velneo supera 64 caracteres';
 }
 
 if ($errors) {
@@ -59,20 +63,32 @@ try {
      throw new RuntimeException("Proveedor no encontrado (id=$proveedor_id)");
    }
 
-  $sql = "
-    INSERT INTO productos (tipo_id, tipo, nombre, proveedor, cantidad, pedido)
-    VALUES (:tipo_id, :tipo, :nombre, :proveedor, :cantidad, :pedido)
-  ";
+  $hasCodigoVelneo = (bool)$pdo->query("SHOW COLUMNS FROM productos LIKE 'codigo_velneo'")->fetch(PDO::FETCH_ASSOC);
+  if ($hasCodigoVelneo) {
+    $sql = "
+      INSERT INTO productos (tipo_id, tipo, nombre, codigo_velneo, proveedor, cantidad, pedido)
+      VALUES (:tipo_id, :tipo, :nombre, :codigo_velneo, :proveedor, :cantidad, :pedido)
+    ";
+  } else {
+    $sql = "
+      INSERT INTO productos (tipo_id, tipo, nombre, proveedor, cantidad, pedido)
+      VALUES (:tipo_id, :tipo, :nombre, :proveedor, :cantidad, :pedido)
+    ";
+  }
 
   $stmt = $pdo->prepare($sql);
-  $ok = $stmt->execute([
+  $params = [
     ':tipo_id'   => $tipo_id,
     ':tipo'      => $tipoNombre,
     ':nombre'    => $nombre,
     ':proveedor' => $proveedorNombre,
     ':cantidad'  => 0,          // stock inicial gestionado por compras_stock
     ':pedido'    => 0,
-  ]);
+  ];
+  if ($hasCodigoVelneo) {
+    $params[':codigo_velneo'] = ($codigo_velneo !== '') ? $codigo_velneo : null;
+  }
+  $ok = $stmt->execute($params);
 
   if (!$ok) {
     throw new RuntimeException('No se pudo insertar el producto.');
@@ -93,4 +109,3 @@ try {
     'error' => $e->getMessage(),
   ], JSON_UNESCAPED_UNICODE);
 }
-
