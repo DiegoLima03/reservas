@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // gestion_compras.php — Gestión de compras (entradas) y stock por proveedor + asignaciones (salidas)
 require_once __DIR__ . '/db.php';
 
@@ -80,8 +80,10 @@ try {
   // =============================
   $hasCodigoVelneo = (bool)$pdo->query("SHOW COLUMNS FROM productos LIKE 'codigo_velneo'")->fetch(PDO::FETCH_ASSOC);
   $selectCodigoVelneo = $hasCodigoVelneo ? 'codigo_velneo' : "'' AS codigo_velneo";
+  $hasPrecioProducto = (bool)$pdo->query("SHOW COLUMNS FROM productos LIKE 'precio'")->fetch(PDO::FETCH_ASSOC);
+  $selectPrecioProducto = $hasPrecioProducto ? 'precio' : "NULL AS precio";
   $sqlProductos = "
-    SELECT id, tipo, nombre, proveedor, {$selectCodigoVelneo}
+    SELECT id, tipo, nombre, proveedor, {$selectCodigoVelneo}, {$selectPrecioProducto}
     FROM productos
     ORDER BY nombre
   ";
@@ -128,19 +130,57 @@ try {
   ";
   $preReservas = $pdo->query($sqlPreReservas)->fetchAll(PDO::FETCH_ASSOC);
 
-  $preReservasPendPorProducto = [];
+  // Cantidad total pedida por producto (todas las pre-reservas pendientes)
+  $preReservasPendPorProductoBruto = [];
   foreach ($preReservas as $pr) {
     $productoPre = trim((string)($pr['producto_deseado'] ?? ''));
     if ($productoPre === '') {
       continue;
     }
     $key = mb_strtolower($productoPre, 'UTF-8');
-    $preReservasPendPorProducto[$key] = (int)($preReservasPendPorProducto[$key] ?? 0) + (int)($pr['cantidad'] ?? 0);
+    $preReservasPendPorProductoBruto[$key] = (int)($preReservasPendPorProductoBruto[$key] ?? 0) + (int)($pr['cantidad'] ?? 0);
+  }
+
+  // Calcular stock libre tras cubrir las pre-reservas:
+  // stock_restante (cantidad_disponible en compras_stock) - pre_reservas_pendientes
+  $preReservasPendPorProducto = [];
+  if ($preReservasPendPorProductoBruto) {
+    $sqlComprasPorProducto = "
+      SELECT
+        p.nombre AS producto_nombre,
+        SUM(c.cantidad_disponible) AS total_restante
+      FROM compras_stock c
+      INNER JOIN productos p ON p.id = c.producto_id
+      GROUP BY p.nombre
+    ";
+    $comprasPorProducto = [];
+    foreach ($pdo->query($sqlComprasPorProducto) as $rowCompra) {
+      $nombreProd = trim((string)($rowCompra['producto_nombre'] ?? ''));
+      if ($nombreProd === '') {
+        continue;
+      }
+      $key = mb_strtolower($nombreProd, 'UTF-8');
+      $comprasPorProducto[$key] = (int)($comprasPorProducto[$key] ?? 0) + (int)($rowCompra['total_restante'] ?? 0);
+    }
+
+    foreach ($preReservasPendPorProductoBruto as $key => $cantidadPreReservas) {
+      $restante = (int)($comprasPorProducto[$key] ?? 0);
+      // stock libre = stock restante - pre-reservas
+      $libre = (int)$restante - (int)$cantidadPreReservas;
+      if ($libre > 0) {
+        $preReservasPendPorProducto[$key] = $libre;
+      }
+    }
   }
 
   // =============================
   // Reparto: matriz Producto (Y) x Delegación (X)
   // =============================
+  $repartoSemanaFiltro = normalizeIsoWeek((string)($_GET['reparto_semana'] ?? ''));
+  if ($repartoSemanaFiltro === '') {
+    $repartoSemanaFiltro = (new DateTimeImmutable('today'))->format('o-\WW');
+  }
+
   $sqlReparto = "
     SELECT
       p.tipo AS tipo_producto,
@@ -150,9 +190,12 @@ try {
       SUM(a.cantidad_asignada) AS cantidad_total
     FROM asignaciones a
     INNER JOIN productos p ON p.id = a.producto_id
+    WHERE DATE_FORMAT(a.fecha_salida, '%x-W%v') = :reparto_semana
     GROUP BY p.tipo, p.nombre, p.proveedor, a.delegacion_id
   ";
-  $rowsReparto = $pdo->query($sqlReparto)->fetchAll(PDO::FETCH_ASSOC);
+  $stReparto = $pdo->prepare($sqlReparto);
+  $stReparto->execute([':reparto_semana' => $repartoSemanaFiltro]);
+  $rowsReparto = $stReparto->fetchAll(PDO::FETCH_ASSOC);
   $repartoMap = [];
   foreach ($rowsReparto as $rr) {
     $tipo = trim((string)($rr['tipo_producto'] ?? ''));
@@ -167,81 +210,200 @@ try {
     $repartoMap[$keyProd][$did] = $qty;
   }
 
+  // Precio medio ponderado por producto (si existe columna precio_unitario)
+  $preciosPorProducto = [];
+  $hasPrecioReparto = (bool)$pdo->query("SHOW COLUMNS FROM compras_stock LIKE 'precio_unitario'")->fetch(PDO::FETCH_ASSOC);
+  if ($hasPrecioReparto) {
+    $sqlPrecios = "
+      SELECT
+        p.tipo,
+        p.nombre,
+        p.proveedor,
+        SUM(c.cantidad_comprada) AS total_cantidad,
+        SUM(c.cantidad_comprada * c.precio_unitario) AS total_importe
+      FROM compras_stock c
+      INNER JOIN productos p ON p.id = c.producto_id
+      GROUP BY p.tipo, p.nombre, p.proveedor
+    ";
+    foreach ($pdo->query($sqlPrecios) as $rowPrecio) {
+      $tipoP = trim((string)($rowPrecio['tipo'] ?? ''));
+      $nombreP = trim((string)($rowPrecio['nombre'] ?? ''));
+      $proveedorP = trim((string)($rowPrecio['proveedor'] ?? ''));
+      $key = mb_strtolower($tipoP . '|' . $nombreP . '|' . $proveedorP, 'UTF-8');
+      $totalCantidad = (float)($rowPrecio['total_cantidad'] ?? 0);
+      $totalImporte  = (float)($rowPrecio['total_importe'] ?? 0);
+      if ($totalCantidad > 0) {
+        $preciosPorProducto[$key] = $totalImporte / $totalCantidad;
+      }
+    }
+  }
+
   $productosEje = [];
   foreach ($productos as $p) {
     $tipo = trim((string)($p['tipo'] ?? ''));
     $nombre = trim((string)($p['nombre'] ?? ''));
     $proveedor = trim((string)($p['proveedor'] ?? ''));
+    $codigoVelneo = $hasCodigoVelneo ? trim((string)($p['codigo_velneo'] ?? '')) : '';
     $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
     if (!isset($productosEje[$keyProd])) {
       $productosEje[$keyProd] = [
-        'tipo' => $tipo,
-        'nombre' => $nombre,
-        'proveedor' => $proveedor,
+        'tipo'            => $tipo,
+        'nombre'          => $nombre,
+        'proveedor'       => $proveedor,
+        'codigo_velneo'   => $codigoVelneo,
+        'precio_unitario' => $preciosPorProducto[$keyProd] ?? null,
       ];
     }
   }
   $productosEje = array_values($productosEje);
 
   // =============================
-  // Exportación Excel (CSV) de Reparto
+  // Exportación Excel por delegación (ZIP de CSVs)
   // =============================
   if (isset($_GET['export_reparto']) && $_GET['export_reparto'] === '1') {
-    $filename = 'reparto_' . date('Ymd_His') . '.csv';
-    header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    echo "\xEF\xBB\xBF";
+    // Si no existe ZipArchive, dejamos el comportamiento antiguo (un solo CSV global)
+    if (!class_exists('ZipArchive')) {
+      $filename = 'reparto_' . str_replace('W', '', $repartoSemanaFiltro) . '_' . date('Ymd_His') . '.csv';
+      header('Content-Type: text/csv; charset=UTF-8');
+      header('Content-Disposition: attachment; filename="' . $filename . '"');
+      echo "\xEF\xBB\xBF";
 
-    $out = fopen('php://output', 'w');
-    if ($out === false) {
-      throw new RuntimeException('No se pudo abrir salida CSV.');
-    }
-
-    $header = ['Producto'];
-    foreach ($delegaciones as $d) {
-      $header[] = (string)($d['nombre'] ?? '');
-    }
-    $header[] = 'Total';
-    fputcsv($out, $header, ';');
-
-    $totalesPorDelegacion = [];
-    $totalGeneral = 0;
-    foreach ($delegaciones as $d) {
-      $totalesPorDelegacion[(int)$d['id']] = 0;
-    }
-
-    foreach ($productosEje as $pe) {
-      $tipo = trim((string)($pe['tipo'] ?? ''));
-      $nombre = trim((string)($pe['nombre'] ?? ''));
-      $proveedor = trim((string)($pe['proveedor'] ?? ''));
-      $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
-      $labelProducto = trim($tipo . ' - ' . $nombre, ' -');
-      if ($proveedor !== '') {
-        $labelProducto .= ' (' . $proveedor . ')';
+      $out = fopen('php://output', 'w');
+      if ($out === false) {
+        throw new RuntimeException('No se pudo abrir salida CSV.');
       }
 
-      $row = [$labelProducto];
-      $totalFila = 0;
+      $header = ['Producto'];
       foreach ($delegaciones as $d) {
-        $did = (int)$d['id'];
-        $qty = (int)($repartoMap[$keyProd][$did] ?? 0);
-        $row[] = $qty;
-        $totalFila += $qty;
-        $totalesPorDelegacion[$did] += $qty;
+        $header[] = (string)($d['nombre'] ?? '');
       }
-      $row[] = $totalFila;
-      $totalGeneral += $totalFila;
-      fputcsv($out, $row, ';');
+      $header[] = 'Total';
+      fputcsv($out, $header, ';');
+
+      $totalesPorDelegacion = [];
+      $totalGeneral = 0;
+      foreach ($delegaciones as $d) {
+        $totalesPorDelegacion[(int)$d['id']] = 0;
+      }
+
+      foreach ($productosEje as $pe) {
+        $tipo = trim((string)($pe['tipo'] ?? ''));
+        $nombre = trim((string)($pe['nombre'] ?? ''));
+        $proveedor = trim((string)($pe['proveedor'] ?? ''));
+        $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
+        $labelProducto = trim($tipo . ' - ' . $nombre, ' -');
+        if ($proveedor !== '') {
+          $labelProducto .= ' (' . $proveedor . ')';
+        }
+
+        $row = [$labelProducto];
+        $totalFila = 0;
+        foreach ($delegaciones as $d) {
+          $did = (int)$d['id'];
+          $qty = (int)($repartoMap[$keyProd][$did] ?? 0);
+          $row[] = $qty;
+          $totalFila += $qty;
+          $totalesPorDelegacion[$did] += $qty;
+        }
+        $row[] = $totalFila;
+        $totalGeneral += $totalFila;
+        fputcsv($out, $row, ';');
+      }
+
+      $footer = ['Totales'];
+      foreach ($delegaciones as $d) {
+        $footer[] = (int)($totalesPorDelegacion[(int)$d['id']] ?? 0);
+      }
+      $footer[] = (int)$totalGeneral;
+      fputcsv($out, $footer, ';');
+
+      fclose($out);
+      exit;
     }
 
-    $footer = ['Totales'];
+    // Nuevo comportamiento: un CSV por delegación dentro de un ZIP
+    $zipFilename = 'reparto_' . str_replace('W', '', $repartoSemanaFiltro) . '_delegaciones_' . date('Ymd_His') . '.zip';
+    $tmpZipPath = tempnam(sys_get_temp_dir(), 'reparto_zip_');
+    $zip = new ZipArchive();
+    if ($zip->open($tmpZipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+      throw new RuntimeException('No se pudo crear el archivo ZIP de exportación.');
+    }
+
     foreach ($delegaciones as $d) {
-      $footer[] = (int)($totalesPorDelegacion[(int)$d['id']] ?? 0);
-    }
-    $footer[] = (int)$totalGeneral;
-    fputcsv($out, $footer, ';');
+      $did = (int)$d['id'];
+      $nombreDeleg = trim((string)($d['nombre'] ?? 'Delegacion_' . $did));
 
-    fclose($out);
+      // Crear CSV en memoria
+      $csvHandle = fopen('php://temp', 'r+');
+      if ($csvHandle === false) {
+        continue;
+      }
+
+      // Escribir BOM UTF-8 para que Excel respete acentos
+      fwrite($csvHandle, "\xEF\xBB\xBF");
+
+      // Cabecera: Delegación, Código, Artículo, Proveedor, Cantidad
+      $header = [
+        'Delegación',
+        'Código',
+        'Artículo',
+        'Proveedor',
+        'Cantidad',
+      ];
+      fputcsv($csvHandle, $header, ';');
+
+      $totalDelegacion = 0;
+      $tieneFilas = false;
+
+      foreach ($productosEje as $pe) {
+        $tipo = trim((string)($pe['tipo'] ?? ''));
+        $nombre = trim((string)($pe['nombre'] ?? ''));
+        $proveedor = trim((string)($pe['proveedor'] ?? ''));
+        $codigoVelneo = trim((string)($pe['codigo_velneo'] ?? ''));
+
+        $keyProd = mb_strtolower($tipo . '|' . $nombre . '|' . $proveedor, 'UTF-8');
+        $qty = (int)($repartoMap[$keyProd][$did] ?? 0);
+        if ($qty <= 0) {
+          continue;
+        }
+
+        $tieneFilas = true;
+        $totalDelegacion += $qty;
+
+        // Artículo: tipo + nombre (sin proveedor, que va en su propia columna)
+        $labelProducto = trim($tipo . ' - ' . $nombre, ' -');
+
+        $row = [
+          $nombreDeleg,
+          $codigoVelneo,
+          $labelProducto,
+          $proveedor,
+          $qty,
+        ];
+        fputcsv($csvHandle, $row, ';');
+      }
+
+      if ($tieneFilas) {
+        rewind($csvHandle);
+        $csvContent = stream_get_contents($csvHandle);
+        fclose($csvHandle);
+
+        $safeName = preg_replace('/[^A-Za-z0-9_\-]/', '_', $nombreDeleg);
+        $csvNameInZip = 'reparto_' . str_replace('W', '', $repartoSemanaFiltro) . '_delegacion_' . $did . '_' . $safeName . '.csv';
+        $zip->addFromString($csvNameInZip, $csvContent);
+      } else {
+        fclose($csvHandle);
+      }
+    }
+
+    $zip->close();
+
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $zipFilename . '"');
+    header('Content-Length: ' . filesize($tmpZipPath));
+
+    readfile($tmpZipPath);
+    @unlink($tmpZipPath);
     exit;
   }
 
@@ -275,7 +437,7 @@ try {
       color: var(--bs-success-text-emphasis);
       z-index: 2;
     }
-    .cell-desc { min-width: 260px; }
+    .cell-desc { min-width: 100px; }
     .cell-qty  { text-align: right; white-space: nowrap; }
     .search-mini { max-width: 320px; }
 
@@ -350,7 +512,7 @@ try {
       <div class="card shadow-sm mb-3">
         <div class="card-body">
           <form id="formCompra" autocomplete="off" class="row g-3">
-            <div class="col-md-4">
+            <div class="col-md-3">
               <label class="form-label"><b>Producto</b></label>
               <div class="autocomplete-wrap">
                 <input type="text" class="form-control" id="c_producto_nombre" placeholder="Escribe para buscar…">
@@ -358,7 +520,7 @@ try {
                 <div class="autocomplete-list d-none" id="c_producto_list"></div>
               </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
               <label class="form-label"><b>Proveedor</b></label>
               <select id="c_proveedor_id" name="proveedor_id" class="form-select">
                 <option value="">Selecciona proveedor…</option>
@@ -368,6 +530,13 @@ try {
               <label class="form-label"><b>Cantidad comprada</b></label>
               <input type="number" min="1" step="1" class="form-control" id="c_cantidad" name="cantidad">
               <div class="form-text" id="c_hint_prereserva"></div>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label"><b>Precio unitario</b></label>
+              <div class="input-group">
+                <span class="input-group-text">€</span>
+                <input type="number" min="0" step="0.01" class="form-control" id="c_precio" name="precio">
+              </div>
             </div>
             <div class="col-md-2">
               <label class="form-label"><b>Semana compra</b></label>
@@ -507,13 +676,28 @@ try {
         <div class="card-body">
           <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
             <h2 class="h6 mb-0">Reparto: productos por delegación</h2>
-            <a href="gestion_compras.php?export_reparto=1" class="btn btn-sm btn-outline-success">Exportar Excel</a>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <form method="get" class="d-flex align-items-center gap-2 mb-0">
+                <label for="reparto_semana" class="form-label mb-0 small text-muted"><b>Semana</b></label>
+                <input
+                  type="week"
+                  id="reparto_semana"
+                  name="reparto_semana"
+                  class="form-control form-control-sm"
+                  value="<?= h($repartoSemanaFiltro) ?>"
+                  onchange="this.form.submit()"
+                >
+              </form>
+              <a href="gestion_compras.php?export_reparto=1&reparto_semana=<?= urlencode($repartoSemanaFiltro) ?>" class="btn btn-sm btn-outline-success">Exportar Excel por delegación</a>
+            </div>
           </div>
           <div class="table-responsive" style="max-height:70vh;">
             <table class="table table-striped table-bordered table-sm align-middle table-sticky" id="tablaReparto">
               <thead class="table-success">
                 <tr>
-                  <th style="min-width:260px;">Producto</th>
+                  <th style="min-width:140px;">Código ERP</th>
+                  <th style="min-width:220px;">Producto</th>
+                  <th class="cell-qty" style="min-width:120px;">Precio unitario</th>
                   <?php foreach ($delegaciones as $d): ?>
                     <th class="cell-qty" style="min-width:120px;"><?= h($d['nombre']) ?></th>
                   <?php endforeach; ?>
@@ -523,7 +707,7 @@ try {
               <tbody>
               <?php if (empty($productosEje)): ?>
                 <tr>
-                  <td colspan="<?= count($delegaciones) + 2 ?>" class="text-center text-muted">No hay productos.</td>
+                  <td colspan="<?= count($delegaciones) + 4 ?>" class="text-center text-muted">No hay productos.</td>
                 </tr>
               <?php else: ?>
                 <?php
@@ -546,7 +730,13 @@ try {
                     $totalFila = 0;
                   ?>
                   <tr>
+                    <td><?= h($pe['codigo_velneo'] ?? '') ?></td>
                     <td><?= h($labelProducto) ?></td>
+                    <td class="cell-qty">
+                      <?php if (isset($pe['precio_unitario']) && $pe['precio_unitario'] !== null): ?>
+                        <?= number_format((float)$pe['precio_unitario'], 2, ',', '.') ?> €
+                      <?php endif; ?>
+                    </td>
                     <?php foreach ($delegaciones as $d): ?>
                       <?php
                         $did = (int)$d['id'];
@@ -565,7 +755,7 @@ try {
               <?php if (!empty($productosEje)): ?>
                 <tfoot>
                   <tr class="table-secondary fw-semibold">
-                    <td class="text-end">Totales:</td>
+                    <td colspan="3" class="text-end">Totales:</td>
                     <?php foreach ($delegaciones as $d): ?>
                       <td class="cell-qty"><?= number_format((int)($totalesPorDelegacion[(int)$d['id']] ?? 0), 0, ',', '.') ?></td>
                     <?php endforeach; ?>
@@ -699,6 +889,13 @@ try {
                     <div class="autocomplete-list d-none" id="p_proveedor_list"></div>
                   </div>
                 </div>
+                <div class="mb-2">
+                  <label class="form-label mb-1"><b>Precio</b></label>
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text">€</span>
+                    <input type="number" step="0.01" min="0" id="p_precio" name="precio" class="form-control form-control-sm">
+                  </div>
+                </div>
                 <div class="d-flex align-items-center mt-3">
                   <div class="text-danger small" id="p_error" style="display:none;"></div>
                   <button type="submit" class="btn btn-success btn-sm ms-auto">Guardar producto</button>
@@ -726,12 +923,13 @@ try {
                       <th>Tipo</th>
                       <th class="cell-desc">Nombre</th>
                       <th>Proveedor</th>
+                      <th class="cell-qty" style="width:110px;">Precio</th>
                     </tr>
                   </thead>
                   <tbody>
                   <?php if (!$productos): ?>
                     <tr>
-                      <td colspan="5" class="text-center text-muted">No hay productos.</td>
+                      <td colspan="6" class="text-center text-muted">No hay productos.</td>
                     </tr>
                   <?php else: ?>
                     <?php foreach ($productos as $p): ?>
@@ -741,6 +939,11 @@ try {
                         <td><?= h($p['tipo']) ?></td>
                         <td class="cell-desc"><?= h($p['nombre']) ?></td>
                         <td><?= h($p['proveedor']) ?></td>
+                        <td class="cell-qty">
+                          <?php if (isset($p['precio']) && $p['precio'] !== null): ?>
+                            <?= number_format((float)$p['precio'], 2, ',', '.') ?> €
+                          <?php endif; ?>
+                        </td>
                       </tr>
                     <?php endforeach; ?>
                   <?php endif; ?>
@@ -1041,11 +1244,11 @@ function updateCompraGhostForProducto(productoNombre){
   const pendiente = parseInt(PRE_RESERVA_BY_PRODUCT[key] || 0, 10) || 0;
 
   if (pendiente > 0) {
-    cantidadInput.placeholder = `Sugerido: ${nf.format(pendiente)}`;
-    hint.textContent = `Pre-reservas pendientes de ${nombre}: ${nf.format(pendiente)}`;
+    cantidadInput.placeholder = `Stock libre: ${nf.format(pendiente)}`;
+    hint.textContent = `Stock libre tras pre-reservas de ${nombre}: ${nf.format(pendiente)}`;
   } else {
     cantidadInput.placeholder = '';
-    hint.textContent = `Sin pre-reservas pendientes de ${nombre}.`;
+    hint.textContent = `Sin stock libre adicional para ${nombre}.`;
   }
 }
 function createAutocomplete({input, hidden, list, type}) {
@@ -1508,12 +1711,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const producto_nombre = (document.getElementById('c_producto_nombre').value||'').trim();
       const proveedor_id = parseInt(document.getElementById('c_proveedor_id').value||'0',10);
       const cantidad     = parseInt(document.getElementById('c_cantidad').value||'0',10);
+      const precio       = parseFloat(document.getElementById('c_precio').value||'0') || 0;
       const semana       = (document.getElementById('c_semana').value||'').trim();
 
       const errs=[];
       if(!producto_nombre)  errs.push('Selecciona un producto válido.');
       if(!proveedor_id) errs.push('Selecciona un proveedor válido.');
       if(!cantidad || cantidad<=0) errs.push('Cantidad debe ser > 0.');
+      if(precio < 0) errs.push('El precio no puede ser negativo.');
       if(!semana) errs.push('Selecciona una semana de compra.');
 
       if(errs.length){
@@ -1525,7 +1730,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         const res = await fetch('save_compra.php', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ producto_nombre, proveedor_id, cantidad, semana })
+          body: JSON.stringify({ producto_nombre, proveedor_id, cantidad, precio, semana })
         });
         let data=null, txt='';
         try { data = await res.json(); } catch(_){ txt = await res.text(); }
@@ -1949,13 +2154,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const term = (pFiltro?.value || '').trim().toLowerCase();
     tablaProductos.querySelectorAll('tbody tr').forEach(tr=>{
       const tds = tr.querySelectorAll('td,th');
-      if (tds.length < 5){ tr.style.display=''; return; }
+      if (tds.length < 6){ tr.style.display=''; return; }
       const id    = (tds[0].textContent||'').toLowerCase();
       const codigo= (tds[1].textContent||'').toLowerCase();
       const tipo  = (tds[2].textContent||'').toLowerCase();
       const nombre= (tds[3].textContent||'').toLowerCase();
       const prov  = (tds[4].textContent||'').toLowerCase();
-      const match = !term || id.includes(term) || codigo.includes(term) || tipo.includes(term) || nombre.includes(term) || prov.includes(term);
+      const precio= (tds[5].textContent||'').toLowerCase();
+      const match = !term
+        || id.includes(term)
+        || codigo.includes(term)
+        || tipo.includes(term)
+        || nombre.includes(term)
+        || prov.includes(term)
+        || precio.includes(term);
       tr.style.display = match ? '' : 'none';
     });
   }
@@ -1975,11 +2187,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const nombre    = (document.getElementById('p_nombre')?.value || '').trim();
       const codigo_velneo = (document.getElementById('p_codigo_velneo')?.value || '').trim();
       const proveedor_id = parseInt(document.getElementById('p_proveedor_id')?.value || '0', 10) || 0;
+      const precioRaw = (document.getElementById('p_precio')?.value || '').trim();
+      const precio = precioRaw === '' ? null : parseFloat(precioRaw.replace(',', '.'));
 
       const errs = [];
       if(!tipo_id) errs.push('Selecciona un tipo de producto.');
       if(!nombre) errs.push('El nombre es obligatorio.');
       if(!proveedor_id) errs.push('Selecciona un proveedor.');
+      if(precio !== null && (isNaN(precio) || precio < 0)) errs.push('El precio debe ser un número mayor o igual que 0.');
 
       if(errs.length){
         if (pErrEl){
@@ -1993,7 +2208,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         const res = await fetch('save_producto.php', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ tipo_id, nombre, codigo_velneo, proveedor_id })
+          body: JSON.stringify({ tipo_id, nombre, codigo_velneo, proveedor_id, precio })
         });
         let data=null, txt='';
         try { data = await res.json(); } catch(_){ txt = await res.text(); }

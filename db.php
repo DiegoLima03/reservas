@@ -1,11 +1,9 @@
 <?php
 // db.php — Conexión PDO (versión compatible, sin strict_types)
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'reservasdb'); // <-- tu BD
-define('DB_USER', 'root');              // <-- tu usuario
-define('DB_PASS', '');                  // <-- tu contraseña
-//define('DB_USER', 'root');
-//define('DB_PASS', '');// luego cambiar
+define('DB_HOST', '127.0.0.1:3308');
+define('DB_NAME', 'compras_chipiona');  // <-- aquí el nombre de tu BD
+define('DB_USER', 'root');              // en Wamp suele ser root
+define('DB_PASS', '');                  // y contraseña vacía
 define('DB_CHARSET', 'utf8mb4');
 
 function pdo() {

@@ -24,6 +24,7 @@ $tipo_id       = isset($input['tipo_id']) ? (int)$input['tipo_id'] : 0;
 $nombre        = trim((string)($input['nombre']    ?? ''));
 $codigo_velneo = trim((string)($input['codigo_velneo'] ?? ''));
 $proveedor_id  = isset($input['proveedor_id']) ? (int)$input['proveedor_id'] : 0;
+$precio        = isset($input['precio']) && $input['precio'] !== '' ? (float)$input['precio'] : null;
 
 $errors = [];
 if ($tipo_id <= 0) {
@@ -37,6 +38,9 @@ if ($proveedor_id <= 0) {
 }
 if ($codigo_velneo !== '' && mb_strlen($codigo_velneo, 'UTF-8') > 64) {
   $errors[] = 'codigo_velneo supera 64 caracteres';
+}
+if ($precio !== null && $precio < 0) {
+  $errors[] = 'precio debe ser mayor o igual que 0';
 }
 
 if ($errors) {
@@ -64,10 +68,22 @@ try {
    }
 
   $hasCodigoVelneo = (bool)$pdo->query("SHOW COLUMNS FROM productos LIKE 'codigo_velneo'")->fetch(PDO::FETCH_ASSOC);
-  if ($hasCodigoVelneo) {
+  $hasPrecio       = (bool)$pdo->query("SHOW COLUMNS FROM productos LIKE 'precio'")->fetch(PDO::FETCH_ASSOC);
+
+  if ($hasCodigoVelneo && $hasPrecio) {
+    $sql = "
+      INSERT INTO productos (tipo_id, tipo, nombre, codigo_velneo, proveedor, cantidad, pedido, precio)
+      VALUES (:tipo_id, :tipo, :nombre, :codigo_velneo, :proveedor, :cantidad, :pedido, :precio)
+    ";
+  } elseif ($hasCodigoVelneo && !$hasPrecio) {
     $sql = "
       INSERT INTO productos (tipo_id, tipo, nombre, codigo_velneo, proveedor, cantidad, pedido)
       VALUES (:tipo_id, :tipo, :nombre, :codigo_velneo, :proveedor, :cantidad, :pedido)
+    ";
+  } elseif (!$hasCodigoVelneo && $hasPrecio) {
+    $sql = "
+      INSERT INTO productos (tipo_id, tipo, nombre, proveedor, cantidad, pedido, precio)
+      VALUES (:tipo_id, :tipo, :nombre, :proveedor, :cantidad, :pedido, :precio)
     ";
   } else {
     $sql = "
@@ -87,6 +103,9 @@ try {
   ];
   if ($hasCodigoVelneo) {
     $params[':codigo_velneo'] = ($codigo_velneo !== '') ? $codigo_velneo : null;
+  }
+  if ($hasPrecio) {
+    $params[':precio'] = $precio !== null ? $precio : 0;
   }
   $ok = $stmt->execute($params);
 

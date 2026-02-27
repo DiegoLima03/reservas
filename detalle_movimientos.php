@@ -39,12 +39,18 @@ try {
     $paramsC[':cq2'] = '%'.$q.'%';
   }
   if ($f_ini !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $f_ini)) {
-    $whereC[] = 'c.fecha_compra >= :c_fini';
-    $paramsC[':c_fini'] = $f_ini;
+    $tsIni = strtotime($f_ini);
+    if ($tsIni !== false) {
+      $whereC[] = 'c.semana >= :c_wini';
+      $paramsC[':c_wini'] = date('o-\WW', $tsIni);
+    }
   }
   if ($f_fin !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $f_fin)) {
-    $whereC[] = 'c.fecha_compra <= :c_ffin';
-    $paramsC[':c_ffin'] = $f_fin;
+    $tsFin = strtotime($f_fin);
+    if ($tsFin !== false) {
+      $whereC[] = 'c.semana <= :c_wfin';
+      $paramsC[':c_wfin'] = date('o-\WW', $tsFin);
+    }
   }
 
   // Export CSV compras
@@ -55,13 +61,13 @@ try {
              pr.nombre AS proveedor,
              c.cantidad_comprada,
              c.cantidad_disponible,
-             c.fecha_compra,
+             c.semana AS fecha_compra,
              c.created_at
       FROM compras_stock c
       INNER JOIN productos   p  ON p.id  = c.producto_id
       INNER JOIN proveedores pr ON pr.id = c.proveedor_id
       WHERE ".implode(' AND ', $whereC)."
-      ORDER BY c.fecha_compra DESC, c.id DESC
+      ORDER BY c.semana DESC, c.id DESC
     ";
     $stC = $pdo->prepare($sqlC);
     foreach ($paramsC as $k=>$v) $stC->bindValue($k,$v);
@@ -82,7 +88,7 @@ try {
     fputcsv($out, ['Filtros', implode(' | ', $filters)], ';');
     fputcsv($out, [''], ';');
 
-    fputcsv($out, ['ID','Producto','Proveedor','Cant. comprada','Cant. disponible','Fecha compra','Creada'], ';');
+    fputcsv($out, ['ID','Producto','Proveedor','Cant. comprada','Cant. disponible','Semana compra','Creada'], ';');
     foreach ($comprasCsv as $r) {
       fputcsv($out, [
         (int)$r['id'],
@@ -105,13 +111,13 @@ try {
            pr.nombre AS proveedor,
            c.cantidad_comprada,
            c.cantidad_disponible,
-           c.fecha_compra,
+           c.semana AS fecha_compra,
            c.created_at
     FROM compras_stock c
     INNER JOIN productos   p  ON p.id  = c.producto_id
     INNER JOIN proveedores pr ON pr.id = c.proveedor_id
     WHERE ".implode(' AND ', $whereC)."
-    ORDER BY c.fecha_compra DESC, c.id DESC
+    ORDER BY c.semana DESC, c.id DESC
   ";
   $stC = $pdo->prepare($sqlC);
   foreach ($paramsC as $k=>$v) $stC->bindValue($k,$v);
@@ -312,7 +318,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
                 <th>Proveedor</th>
                 <th class="text-end" style="width:120px;">Cant. comprada</th>
                 <th class="text-end" style="width:120px;">Cant. disponible</th>
-                <th style="width:120px;">Fecha compra</th>
+                <th style="width:120px;">Semana compra</th>
                 <th style="width:170px;">Creada</th>
               </tr>
             </thead>

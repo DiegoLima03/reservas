@@ -20,12 +20,13 @@ if (empty($input)) {
   }
 }
 
-$producto_id   = (int)($input['producto_id']   ?? 0); // opcional, se recalcula
+$producto_id     = (int)($input['producto_id']   ?? 0); // opcional, se recalcula
 $producto_nombre = trim((string)($input['producto_nombre'] ?? ''));
-$proveedor_id  = (int)($input['proveedor_id']  ?? 0);
-$cantidad      = (int)($input['cantidad']      ?? 0);
-$fecha_compra  = trim((string)($input['fecha_compra'] ?? ''));
-$semana        = trim((string)($input['semana'] ?? ''));
+$proveedor_id    = (int)($input['proveedor_id']  ?? 0);
+$cantidad        = (int)($input['cantidad']      ?? 0);
+$precio          = isset($input['precio']) ? (float)$input['precio'] : null;
+$fecha_compra    = trim((string)($input['fecha_compra'] ?? ''));
+$semana          = trim((string)($input['semana'] ?? ''));
 
 if ($semana === '' && $fecha_compra !== '') {
   // Compatibilidad: convertir fecha YYYY-MM-DD a semana ISO YYYY-WNN
@@ -43,6 +44,7 @@ $errors = [];
 if ($producto_nombre === '') $errors[] = "Nombre de producto vacío o no válido";
 if ($proveedor_id <= 0) $errors[] = "proveedor_id vacío o no válido";
 if ($cantidad     <= 0) $errors[] = "cantidad debe ser > 0";
+if ($precio !== null && $precio < 0) $errors[] = "precio no puede ser negativo";
 if ($semana === '') $errors[] = "semana requerida (YYYY-WNN)";
 if ($semana !== '' && !preg_match('/^\d{4}-W\d{2}$/', $semana)) {
   $errors[] = "semana inválida (YYYY-WNN)";
@@ -83,22 +85,38 @@ try {
     throw new RuntimeException("No existe producto '$producto_nombre' para el proveedor '$provNombre'.");
   }
 
+  // Comprobar si existe columna de precio_unitario en compras_stock
+  $hasPrecio = (bool)$pdo->query("SHOW COLUMNS FROM compras_stock LIKE 'precio_unitario'")->fetch(PDO::FETCH_ASSOC);
+
   // Insertar compra (entrada de stock)
-  $sql = "
-    INSERT INTO compras_stock
-      (producto_id, proveedor_id, cantidad_comprada, cantidad_disponible, semana)
-    VALUES
-      (:producto_id, :proveedor_id, :cantidad_comprada, :cantidad_disponible, :semana)
-  ";
+  if ($hasPrecio) {
+    $sql = "
+      INSERT INTO compras_stock
+        (producto_id, proveedor_id, cantidad_comprada, cantidad_disponible, semana, precio_unitario)
+      VALUES
+        (:producto_id, :proveedor_id, :cantidad_comprada, :cantidad_disponible, :semana, :precio_unitario)
+    ";
+  } else {
+    $sql = "
+      INSERT INTO compras_stock
+        (producto_id, proveedor_id, cantidad_comprada, cantidad_disponible, semana)
+      VALUES
+        (:producto_id, :proveedor_id, :cantidad_comprada, :cantidad_disponible, :semana)
+    ";
+  }
 
   $stmt = $pdo->prepare($sql);
-  $ok = $stmt->execute([
-    ':producto_id'        => $producto_id,
-    ':proveedor_id'       => $proveedor_id,
-    ':cantidad_comprada'  => $cantidad,
-    ':cantidad_disponible'=> $cantidad,
-    ':semana'             => $semana,
-  ]);
+  $params = [
+    ':producto_id'         => $producto_id,
+    ':proveedor_id'        => $proveedor_id,
+    ':cantidad_comprada'   => $cantidad,
+    ':cantidad_disponible' => $cantidad,
+    ':semana'              => $semana,
+  ];
+  if ($hasPrecio) {
+    $params[':precio_unitario'] = $precio !== null ? $precio : 0;
+  }
+  $ok = $stmt->execute($params);
 
   if (!$ok) {
     throw new RuntimeException("No se pudo registrar la compra.");
