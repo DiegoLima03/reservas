@@ -430,36 +430,352 @@ try {
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
   <style>
-    .table-sticky thead th {
-      position: sticky;
-      top: 0;
-      background: var(--bs-success-bg-subtle);
-      color: var(--bs-success-text-emphasis);
-      z-index: 2;
+    :root {
+      --vz-negro: #10180e;
+      --vz-marron1: #46331f;
+      --vz-marron2: #85725e;
+      --vz-crema: #e5e2dc;
+      --vz-verde: #8e8b30;
+      --vz-rojo: #c83c32;
+      --vz-blanco: #ffffff;
+      --vz-verde-suave: rgba(142, 139, 48, 0.1);
     }
+
+    body.gestion-compras {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif !important;
+      background: var(--vz-crema) !important;
+      color: var(--vz-negro);
+    }
+
+    body.gestion-compras .compras-layout {
+      width: 100%;
+      margin: 8px 0 10px;
+      padding: 0 10px 14px;
+    }
+
+    body.gestion-compras .page-headline {
+      margin-bottom: 10px !important;
+      align-items: center;
+      gap: 8px;
+    }
+
+    body.gestion-compras .tit {
+      margin: 0;
+      font-size: 24px !important;
+      color: var(--vz-negro);
+    }
+
+    body.gestion-compras .btn {
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+    }
+
+    body.gestion-compras .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    body.gestion-compras .btn-primary,
+    body.gestion-compras .btn-success {
+      background: var(--vz-verde);
+      border-color: var(--vz-verde);
+      color: var(--vz-crema);
+    }
+
+    body.gestion-compras .btn-primary:hover,
+    body.gestion-compras .btn-success:hover {
+      background: #7c792b;
+      border-color: #7c792b;
+      box-shadow: 0 4px 12px rgba(142, 139, 48, 0.3);
+    }
+
+    body.gestion-compras .btn-outline-primary,
+    body.gestion-compras .btn-outline-secondary,
+    body.gestion-compras .btn-outline-success {
+      border-color: var(--vz-marron2);
+      color: var(--vz-marron1);
+      background: var(--vz-crema);
+    }
+
+    body.gestion-compras .btn-outline-primary:hover,
+    body.gestion-compras .btn-outline-secondary:hover,
+    body.gestion-compras .btn-outline-success:hover {
+      border-color: var(--vz-marron1);
+      background: var(--vz-blanco);
+      color: var(--vz-marron1);
+      box-shadow: 0 4px 12px rgba(16, 24, 14, 0.14);
+    }
+
+    body.gestion-compras .btn-outline-danger {
+      border-color: var(--vz-rojo);
+      color: var(--vz-rojo);
+      background: var(--vz-blanco);
+    }
+
+    body.gestion-compras .btn-outline-danger:hover {
+      border-color: var(--vz-rojo);
+      background: var(--vz-rojo);
+      color: var(--vz-crema);
+      box-shadow: 0 4px 12px rgba(200, 60, 50, 0.24);
+    }
+
+    body.gestion-compras .btn-secondary {
+      border-color: var(--vz-marron2);
+      background: var(--vz-blanco);
+      color: var(--vz-marron2);
+    }
+
+    body.gestion-compras .btn-secondary:hover {
+      border-color: var(--vz-marron1);
+      background: var(--vz-crema);
+      color: var(--vz-marron1);
+    }
+
+    body.gestion-compras .btn-link {
+      color: var(--vz-verde);
+      text-decoration: none;
+    }
+
+    body.gestion-compras .btn-link:hover {
+      color: #7c792b;
+    }
+
+    body.gestion-compras #tabsCompras {
+      margin: 0 0 10px;
+      padding: 0;
+      border: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    body.gestion-compras #tabsCompras .nav-item {
+      margin: 0;
+    }
+
+    body.gestion-compras #tabsCompras .nav-link {
+      border: 1px solid var(--vz-marron2);
+      border-radius: 8px;
+      background: var(--vz-blanco);
+      color: var(--vz-marron1);
+      padding: 8px 12px;
+      font-size: 13px;
+      line-height: 1.2;
+      transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+    }
+
+    body.gestion-compras #tabsCompras .nav-link:hover {
+      background: var(--vz-crema);
+      border-color: var(--vz-marron1);
+    }
+
+    body.gestion-compras #tabsCompras .nav-link.active {
+      background: var(--vz-verde);
+      border-color: var(--vz-verde);
+      color: var(--vz-crema);
+      font-weight: 700;
+    }
+
+    body.gestion-compras #tabsComprasContent {
+      background: var(--vz-blanco);
+      border: 1px solid var(--vz-marron2);
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(16, 24, 14, 0.08);
+      padding: 14px;
+    }
+
+    body.gestion-compras .master-filters {
+      padding: 12px 12px 0;
+      border-bottom: 1px solid var(--vz-marron2);
+      margin-bottom: 12px !important;
+    }
+
+    body.gestion-compras .card {
+      background: var(--vz-blanco);
+      border: 1px solid var(--vz-marron2);
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(16, 24, 14, 0.08) !important;
+      overflow: hidden;
+    }
+
+    body.gestion-compras .card-body {
+      padding: 14px;
+    }
+
+    body.gestion-compras .form-label,
+    body.gestion-compras .form-text,
+    body.gestion-compras .text-muted,
+    body.gestion-compras .small.text-muted {
+      color: var(--vz-marron2) !important;
+    }
+
+    body.gestion-compras .form-control,
+    body.gestion-compras .form-select,
+    body.gestion-compras .input-group-text {
+      border: 1px solid var(--vz-marron2);
+      border-radius: 8px;
+      background: var(--vz-blanco);
+      color: var(--vz-negro);
+      font-size: 13px;
+    }
+
+    body.gestion-compras .form-control:focus,
+    body.gestion-compras .form-select:focus {
+      border-color: var(--vz-verde);
+      box-shadow: 0 0 0 0.2rem rgba(142, 139, 48, 0.2);
+    }
+
     .cell-desc { min-width: 100px; }
-    .cell-qty  { text-align: right; white-space: nowrap; }
+    .cell-qty { text-align: right; white-space: nowrap; }
     .search-mini { max-width: 320px; }
 
     .autocomplete-wrap { position: relative; }
     .autocomplete-list {
-      position:absolute; z-index:1080; left:0; right:0; top:calc(100% - 1px);
-      background:#fff; border:1px solid #ced4da; border-top:0;
-      max-height:40vh; overflow:auto;
+      position: absolute;
+      z-index: 1080;
+      left: 0;
+      right: 0;
+      top: calc(100% - 1px);
+      background: var(--vz-blanco);
+      border: 1px solid var(--vz-marron2);
+      border-top: 0;
+      max-height: 40vh;
+      overflow: auto;
     }
-    .autocomplete-item { padding:.45rem .6rem; cursor:pointer; }
-    .autocomplete-item.active,
-    .autocomplete-item:hover { background:#f1f3f5; }
 
-    .row-resto0 td, .row-resto0 th {
-      background: rgba(220, 53, 69, .10);
+    .autocomplete-item {
+      padding: 0.45rem 0.6rem;
+      cursor: pointer;
+    }
+
+    .autocomplete-item.active,
+    .autocomplete-item:hover {
+      background: var(--vz-verde-suave);
+    }
+
+    body.gestion-compras .table-responsive {
+      border: 1px solid var(--vz-marron2);
+      border-radius: 10px;
+      background: var(--vz-blanco);
+    }
+
+    body.gestion-compras .table {
+      margin-bottom: 0;
+      font-size: 14px;
+      border-collapse: collapse;
+      --bs-table-bg: transparent;
+    }
+
+    body.gestion-compras .table > :not(caption) > * > * {
+      border-color: var(--vz-marron2);
+      padding: 10px 12px;
+      border-bottom-width: 1px;
+      vertical-align: middle;
+    }
+
+    body.gestion-compras .table > thead {
+      background: var(--vz-verde);
+      color: var(--vz-crema);
+      text-align: left;
+    }
+
+    body.gestion-compras .table > thead > tr {
+      border-left: 3px solid var(--vz-verde);
+    }
+
+    body.gestion-compras .table > thead th {
+      border-left: none;
+      box-shadow: none;
+      border-bottom: none;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    body.gestion-compras .table-bordered > :not(caption) > * > * {
+      border-width: 0 0 1px;
+    }
+
+    body.gestion-compras .table-striped > tbody > tr:nth-of-type(odd) > * {
+      --bs-table-accent-bg: transparent;
+      color: inherit;
+    }
+
+    body.gestion-compras .table tbody tr {
+      border-left: 3px solid transparent;
+      transition: border-left 0.2s ease, background 0.2s ease;
+    }
+
+    body.gestion-compras .table tbody tr:hover {
+      border-left: 3px solid var(--vz-verde);
+      background: var(--vz-verde-suave);
+    }
+
+    .table-sticky thead th {
+      position: sticky;
+      top: 0;
+      background: var(--vz-verde) !important;
+      color: var(--vz-crema) !important;
+      z-index: 2;
+    }
+
+    body.gestion-compras .table tfoot tr {
+      background: var(--vz-crema) !important;
+      color: var(--vz-marron1);
+    }
+
+    .row-resto0 td,
+    .row-resto0 th {
+      background: rgba(200, 60, 50, 0.08) !important;
+    }
+
+    .row-cerrada-antigua {
+      opacity: 0.68;
+    }
+
+    body.gestion-compras .modal-content {
+      border: 1px solid var(--vz-marron2);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 14px 30px rgba(16, 24, 14, 0.24);
+    }
+
+    body.gestion-compras .modal-header {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      background: var(--vz-verde);
+      color: var(--vz-crema);
+    }
+
+    body.gestion-compras .modal-header .btn-close {
+      filter: invert(1) grayscale(1);
+      opacity: 0.88;
+    }
+
+    body.gestion-compras .modal-footer {
+      border-top: 1px solid #e8e2d8;
+    }
+
+    @media (max-width: 991.98px) {
+      body.gestion-compras .page-headline {
+        align-items: flex-start;
+      }
+
+      body.gestion-compras #tabsComprasContent {
+        padding: 10px;
+      }
+
+      body.gestion-compras .master-filters {
+        padding: 10px 10px 0;
+      }
     }
   </style>
 </head>
-<body class="bg-light">
-<div class="container-fluid py-4">
+<body class="gestion-compras">
+<div class="container-fluid py-4 compras-layout">
 
-  <div class="d-flex align-items-center justify-content-between mb-3">
+  <div class="d-flex align-items-center justify-content-between mb-3 page-headline">
     <h1 class="h4 mb-0 tit">Módulo de Compras y Distribución</h1>
     <div class="d-flex gap-2">
       <a href="detalle_movimientos.php" class="btn btn-sm btn-outline-primary">Detalle movimientos</a>
@@ -467,7 +783,7 @@ try {
   </div>
 
   <!-- Pestañas -->
-  <ul class="nav nav-tabs mb-3" id="tabsCompras" role="tablist">
+  <ul class="nav nav-tabs mb-3 compras-tabs" id="tabsCompras" role="tablist">
     <li class="nav-item" role="presentation">
       <button class="nav-link" id="tab-compra-tab" data-bs-toggle="tab" data-bs-target="#tab-compra" type="button" role="tab">
         Registrar compra
@@ -505,7 +821,7 @@ try {
     </li>
   </ul>
 
-  <div class="tab-content" id="tabsComprasContent">
+  <div class="tab-content compras-content" id="tabsComprasContent">
 
     <!-- TAB 1: Registrar compra -->
     <div class="tab-pane fade" id="tab-compra" role="tabpanel" aria-labelledby="tab-compra-tab">
@@ -553,7 +869,7 @@ try {
 
     <!-- TAB 2: Matriz de stock -->
     <div class="tab-pane fade show active" id="tab-stock" role="tabpanel" aria-labelledby="tab-stock-tab">
-      <div class="d-flex align-items-end justify-content-between mb-2 flex-wrap gap-2">
+      <div class="d-flex align-items-end justify-content-between mb-2 flex-wrap gap-2 master-filters">
         <div class="d-flex flex-column">
           <label for="ftexto" class="form-label mb-1 small text-muted"><b>Buscar</b></label>
           <input type="text" id="ftexto" class="form-control form-control-sm search-mini" placeholder="Producto / proveedor">
