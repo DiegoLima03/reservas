@@ -9,6 +9,8 @@ require_login();
 @error_reporting(E_ALL);
 
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+$authUser = current_user();
+$isAdmin = current_user_is_admin();
 function normalizeIsoWeek(?string $value): string {
   $value = trim((string)$value);
   if ($value === '') return '';
@@ -126,10 +128,15 @@ try {
   // Usuarios (para pestaña Usuarios)
   // =============================
   $hasUsuariosTable = (bool)$pdo->query("SHOW TABLES LIKE 'usuarios'")->fetch(PDO::FETCH_NUM);
+  $hasUsuariosAdminCol = false;
   $usuarios = [];
-  if ($hasUsuariosTable) {
+  if ($hasUsuariosTable && $isAdmin) {
+    $hasUsuariosAdminCol = (bool)$pdo->query("SHOW COLUMNS FROM usuarios LIKE 'es_admin'")->fetch(PDO::FETCH_ASSOC);
+    $selectUsuarioAdmin = $hasUsuariosAdminCol
+      ? 'COALESCE(es_admin, 0) AS es_admin'
+      : '0 AS es_admin';
     $sqlUsuarios = "
-      SELECT id, nombre_usuario, COALESCE(intentos, 0) AS intentos, COALESCE(bloqueado, 0) AS bloqueado
+      SELECT id, nombre_usuario, COALESCE(intentos, 0) AS intentos, COALESCE(bloqueado, 0) AS bloqueado, {$selectUsuarioAdmin}
       FROM usuarios
       ORDER BY id DESC
     ";
@@ -796,6 +803,7 @@ try {
     <h1 class="h4 mb-0 tit">Módulo de Compras y Distribución</h1>
     <div class="d-flex gap-2">
       <a href="detalle_movimientos.php" class="btn btn-sm btn-outline-primary">Detalle movimientos</a>
+      <a href="logout.php" class="btn btn-sm btn-outline-danger">Cerrar sesión</a>
     </div>
   </div>
 
@@ -836,11 +844,13 @@ try {
         Delegaciones
       </button>
     </li>
+    <?php if ($isAdmin): ?>
     <li class="nav-item" role="presentation">
       <button class="nav-link" id="tab-usuarios-tab" data-bs-toggle="tab" data-bs-target="#tab-usuarios" type="button" role="tab">
         Usuarios
       </button>
     </li>
+    <?php endif; ?>
   </ul>
 
   <div class="tab-content compras-content" id="tabsComprasContent">
@@ -1414,6 +1424,7 @@ try {
       </div>
     </div><!-- /tab-delegaciones -->
 
+    <?php if ($isAdmin): ?>
     <!-- TAB 6: Gestión de usuarios -->
     <div class="tab-pane fade" id="tab-usuarios" role="tabpanel" aria-labelledby="tab-usuarios-tab">
       <div class="row g-3 mb-3">
@@ -1429,14 +1440,20 @@ try {
                 <div class="mb-2">
                   <label class="form-label mb-1"><b>Contraseña</b></label>
                   <div class="input-group input-group-sm">
-                    <input type="text" id="u_password" name="password" class="form-control form-control-sm" required>
+                    <input type="password" id="u_password" name="password" class="form-control form-control-sm" required>
                     <button type="button" class="btn btn-outline-secondary" id="u_btn_generar">Generar</button>
                   </div>
                   <div class="form-text">Hash automático con bcrypt, coste 12.</div>
                 </div>
                 <div class="mb-2">
                   <label class="form-label mb-1"><b>Repetir contraseña</b></label>
-                  <input type="text" id="u_password2" class="form-control form-control-sm" required>
+                  <input type="password" id="u_password2" class="form-control form-control-sm" required>
+                </div>
+                <div class="form-check mt-2">
+                  <input class="form-check-input" type="checkbox" value="1" id="u_es_admin">
+                  <label class="form-check-label" for="u_es_admin">
+                    Usuario administrador
+                  </label>
                 </div>
                 <div class="d-flex align-items-center mt-3">
                   <div class="text-danger small" id="u_error" style="display:none;"></div>
@@ -1463,6 +1480,7 @@ try {
                     <tr>
                       <th style="width:70px;">ID</th>
                       <th>Usuario</th>
+                      <th style="width:120px;">Rol</th>
                       <th style="width:110px;">Intentos</th>
                       <th style="width:120px;">Bloqueado</th>
                     </tr>
@@ -1470,13 +1488,20 @@ try {
                   <tbody>
                   <?php if (!$usuarios): ?>
                     <tr>
-                      <td colspan="4" class="text-center text-muted">No hay usuarios.</td>
+                      <td colspan="5" class="text-center text-muted">No hay usuarios.</td>
                     </tr>
                   <?php else: ?>
                     <?php foreach ($usuarios as $u): ?>
                       <tr>
                         <td><?= (int)$u['id'] ?></td>
                         <td><?= h($u['nombre_usuario']) ?></td>
+                        <td>
+                          <?php if ((int)($u['es_admin'] ?? 0) === 1): ?>
+                            <span class="badge text-bg-primary">Admin</span>
+                          <?php else: ?>
+                            <span class="badge text-bg-secondary">Usuario</span>
+                          <?php endif; ?>
+                        </td>
                         <td class="cell-qty"><?= (int)$u['intentos'] ?></td>
                         <td>
                           <?php if ((int)$u['bloqueado'] === 1): ?>
@@ -1496,6 +1521,7 @@ try {
         </div>
       </div>
     </div><!-- /tab-usuarios -->
+    <?php endif; ?>
 
   </div><!-- /tab-content -->
 </div>
@@ -2806,6 +2832,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const uNombreEl = document.getElementById('u_nombre_usuario');
   const uPassEl = document.getElementById('u_password');
   const uPass2El = document.getElementById('u_password2');
+  const uEsAdminEl = document.getElementById('u_es_admin');
   const uBtnGenerar = document.getElementById('u_btn_generar');
 
   function applyUsuariosFilter(){
@@ -2813,10 +2840,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const term = (uFiltro?.value || '').trim().toLowerCase();
     tablaUsuarios.querySelectorAll('tbody tr').forEach(tr=>{
       const tds = tr.querySelectorAll('td,th');
-      if (tds.length < 4){ tr.style.display=''; return; }
+      if (tds.length < 5){ tr.style.display=''; return; }
       const id = (tds[0].textContent||'').toLowerCase();
       const user = (tds[1].textContent||'').toLowerCase();
-      const match = !term || id.includes(term) || user.includes(term);
+      const rol = (tds[2].textContent||'').toLowerCase();
+      const match = !term || id.includes(term) || user.includes(term) || rol.includes(term);
       tr.style.display = match ? '' : 'none';
     });
   }
@@ -2865,6 +2893,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const nombre_usuario = (uNombreEl?.value || '').trim();
       const password = (uPassEl?.value || '').trim();
       const password2 = (uPass2El?.value || '').trim();
+      const es_admin = (uEsAdminEl?.checked) ? 1 : 0;
 
       const errs = [];
       if (!nombre_usuario) errs.push('El usuario es obligatorio.');
@@ -2887,7 +2916,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         const res = await fetch('save_usuario.php', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ nombre_usuario, password })
+          body: JSON.stringify({ nombre_usuario, password, es_admin })
         });
         let data=null, txt='';
         try { data = await res.json(); } catch(_){ txt = await res.text(); }

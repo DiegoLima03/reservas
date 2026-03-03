@@ -282,6 +282,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
       <a class="btn btn-sm btn-outline-primary" href="gestion_compras.php">Volver a gestión</a>
       <a class="btn btn-sm btn-outline-success" href="<?= h($exportComprasUrl) ?>">Exportar compras</a>
       <a class="btn btn-sm btn-outline-success" href="<?= h($exportSalidasUrl) ?>">Exportar salidas</a>
+      <a class="btn btn-sm btn-outline-danger" href="logout.php">Cerrar sesión</a>
     </div>
   </div>
 

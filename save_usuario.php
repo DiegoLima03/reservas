@@ -8,6 +8,15 @@ require_login_json();
 
 header('Content-Type: application/json; charset=UTF-8');
 
+if (!current_user_is_admin()) {
+  http_response_code(403);
+  echo json_encode(
+    ['ok' => false, 'error' => 'No tienes permisos para gestionar usuarios.'],
+    JSON_UNESCAPED_UNICODE
+  );
+  exit;
+}
+
 // Admite form-data o JSON.
 $input = $_POST;
 if (empty($input)) {
@@ -22,6 +31,7 @@ if (empty($input)) {
 
 $nombreUsuario = trim((string)($input['nombre_usuario'] ?? ''));
 $password = (string)($input['password'] ?? '');
+$esAdmin = (int)($input['es_admin'] ?? 0) === 1 ? 1 : 0;
 
 $errors = [];
 if ($nombreUsuario === '') {
@@ -48,6 +58,7 @@ try {
   if (!$hasUsuarios) {
     throw new RuntimeException("No existe la tabla 'usuarios'.");
   }
+  $hasUsuariosAdminCol = (bool)$pdo->query("SHOW COLUMNS FROM usuarios LIKE 'es_admin'")->fetch(PDO::FETCH_ASSOC);
 
   $st = $pdo->prepare('SELECT id FROM usuarios WHERE nombre_usuario = ? LIMIT 1');
   $st->execute([$nombreUsuario]);
@@ -66,14 +77,26 @@ try {
     throw new RuntimeException('No se pudo generar el hash de la contraseña.');
   }
 
-  $ins = $pdo->prepare(
-    'INSERT INTO usuarios (nombre_usuario, pass, intentos, bloqueado)
-     VALUES (:nombre_usuario, :pass, 0, 0)'
-  );
-  $ok = $ins->execute([
-    ':nombre_usuario' => $nombreUsuario,
-    ':pass' => $hash,
-  ]);
+  if ($hasUsuariosAdminCol) {
+    $ins = $pdo->prepare(
+      'INSERT INTO usuarios (nombre_usuario, pass, intentos, bloqueado, es_admin)
+       VALUES (:nombre_usuario, :pass, 0, 0, :es_admin)'
+    );
+    $ok = $ins->execute([
+      ':nombre_usuario' => $nombreUsuario,
+      ':pass' => $hash,
+      ':es_admin' => $esAdmin,
+    ]);
+  } else {
+    $ins = $pdo->prepare(
+      'INSERT INTO usuarios (nombre_usuario, pass, intentos, bloqueado)
+       VALUES (:nombre_usuario, :pass, 0, 0)'
+    );
+    $ok = $ins->execute([
+      ':nombre_usuario' => $nombreUsuario,
+      ':pass' => $hash,
+    ]);
+  }
 
   if (!$ok) {
     throw new RuntimeException('No se pudo crear el usuario.');
@@ -84,6 +107,7 @@ try {
       'ok' => true,
       'id' => (int)$pdo->lastInsertId(),
       'nombre_usuario' => $nombreUsuario,
+      'es_admin' => $hasUsuariosAdminCol ? $esAdmin : 0,
       'hash_algoritmo' => 'bcrypt',
       'hash_coste' => 12,
     ],

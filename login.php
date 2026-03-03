@@ -13,6 +13,15 @@ try {
   $pdo = null;
 }
 
+$hasUsuariosAdminCol = false;
+if ($pdo instanceof PDO) {
+  try {
+    $hasUsuariosAdminCol = (bool)$pdo->query("SHOW COLUMNS FROM usuarios LIKE 'es_admin'")->fetch(PDO::FETCH_ASSOC);
+  } catch (Throwable $e) {
+    $hasUsuariosAdminCol = false;
+  }
+}
+
 // ====== LOG A CSV (nuevo destino: ../private/logs_veratrack.log) ======
 // 3. Ruta base real
 // Apunta a c:/wamp64/www/private/
@@ -204,8 +213,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $error = 'Usuario y contraseña son obligatorios.';
   } else {
     try {
+      $selectAdminSql = $hasUsuariosAdminCol
+        ? 'COALESCE(es_admin, 0) AS es_admin'
+        : '0 AS es_admin';
       $stmt = $pdo->prepare("
-      SELECT id, nombre_usuario, pass, COALESCE(intentos, 0) AS intentos, COALESCE(bloqueado, 0) AS bloqueado
+      SELECT id, nombre_usuario, pass, COALESCE(intentos, 0) AS intentos, COALESCE(bloqueado, 0) AS bloqueado, {$selectAdminSql}
       FROM usuarios
       WHERE nombre_usuario = ?
       LIMIT 1
@@ -232,6 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         login_user([
           'id' => (int)$user['id'],
           'username' => (string)$user['nombre_usuario'],
+          'is_admin' => (int)($user['es_admin'] ?? 0),
         ]);
 
         $_SESSION['login_success'] = true;

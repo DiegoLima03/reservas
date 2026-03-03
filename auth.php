@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 if (!defined('AUTH_BYPASS')) {
-  define('AUTH_BYPASS', true); // true = login desactivado temporalmente
+  define('AUTH_BYPASS', false); // false = login activado
 }
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -36,8 +36,13 @@ function sanitize_internal_path(?string $path, string $fallback = 'gestion_compr
     return $fallback;
   }
 
-  if (substr($target, 0, 1) === '/') {
-    $target = ltrim($target, '/');
+  // Si llega sin barra inicial pero en formato "carpeta/archivo.php",
+  // normalizamos a ruta absoluta del sitio para evitar duplicar subcarpetas.
+  if ($target !== '' && substr($target, 0, 1) !== '/' && strpos($target, '/') !== false) {
+    $scriptDir = trim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? ''))), '/');
+    if ($scriptDir !== '' && strpos($target, $scriptDir . '/') === 0) {
+      $target = '/' . $target;
+    }
   }
 
   if ($target === '' || strpos($target, '..') !== false) {
@@ -74,8 +79,20 @@ function login_user(array $user): void
   $_SESSION['user'] = [
     'id' => (int)($user['id'] ?? 0),
     'username' => (string)($user['username'] ?? ''),
+    'is_admin' => ((int)($user['is_admin'] ?? 0) === 1) ? 1 : 0,
   ];
   $_SESSION['logged_at'] = date('c');
+}
+
+function current_user_is_admin(): bool
+{
+  if (AUTH_BYPASS) {
+    return true;
+  }
+  if (!is_logged_in()) {
+    return false;
+  }
+  return ((int)($_SESSION['user']['is_admin'] ?? 0) === 1);
 }
 
 function logout_user(): void
