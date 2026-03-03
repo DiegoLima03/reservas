@@ -1,6 +1,9 @@
 <?php
 // gestion_compras.php — Gestión de compras (entradas) y stock por proveedor + asignaciones (salidas)
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+
+require_login();
 
 @ini_set('display_errors','1');
 @error_reporting(E_ALL);
@@ -118,6 +121,20 @@ try {
     ORDER BY id ASC
   ";
   $delegaciones = $pdo->query($sqlDelegaciones)->fetchAll(PDO::FETCH_ASSOC);
+
+  // =============================
+  // Usuarios (para pestaña Usuarios)
+  // =============================
+  $hasUsuariosTable = (bool)$pdo->query("SHOW TABLES LIKE 'usuarios'")->fetch(PDO::FETCH_NUM);
+  $usuarios = [];
+  if ($hasUsuariosTable) {
+    $sqlUsuarios = "
+      SELECT id, nombre_usuario, COALESCE(intentos, 0) AS intentos, COALESCE(bloqueado, 0) AS bloqueado
+      FROM usuarios
+      ORDER BY id DESC
+    ";
+    $usuarios = $pdo->query($sqlUsuarios)->fetchAll(PDO::FETCH_ASSOC);
+  }
 
   // =============================
   // Pre-reservas pendientes
@@ -819,6 +836,11 @@ try {
         Delegaciones
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-usuarios-tab" data-bs-toggle="tab" data-bs-target="#tab-usuarios" type="button" role="tab">
+        Usuarios
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content compras-content" id="tabsComprasContent">
@@ -1391,6 +1413,89 @@ try {
         </div>
       </div>
     </div><!-- /tab-delegaciones -->
+
+    <!-- TAB 6: Gestión de usuarios -->
+    <div class="tab-pane fade" id="tab-usuarios" role="tabpanel" aria-labelledby="tab-usuarios-tab">
+      <div class="row g-3 mb-3">
+        <div class="col-lg-5">
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <h2 class="h6 mb-3">Nuevo usuario</h2>
+              <form id="formUsuario" autocomplete="off">
+                <div class="mb-2">
+                  <label class="form-label mb-1"><b>Usuario</b></label>
+                  <input type="text" id="u_nombre_usuario" name="nombre_usuario" class="form-control form-control-sm" maxlength="50" required>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label mb-1"><b>Contraseña</b></label>
+                  <div class="input-group input-group-sm">
+                    <input type="text" id="u_password" name="password" class="form-control form-control-sm" required>
+                    <button type="button" class="btn btn-outline-secondary" id="u_btn_generar">Generar</button>
+                  </div>
+                  <div class="form-text">Hash automático con bcrypt, coste 12.</div>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label mb-1"><b>Repetir contraseña</b></label>
+                  <input type="text" id="u_password2" class="form-control form-control-sm" required>
+                </div>
+                <div class="d-flex align-items-center mt-3">
+                  <div class="text-danger small" id="u_error" style="display:none;"></div>
+                  <div class="text-success small" id="u_ok" style="display:none;"></div>
+                  <button type="submit" class="btn btn-success btn-sm ms-auto">Guardar usuario</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-7">
+          <div class="card shadow-sm">
+            <div class="card-body">
+              <div class="d-flex align-items-end justify-content-between mb-2 flex-wrap gap-2">
+                <div class="d-flex flex-column">
+                  <label for="u_filtro" class="form-label mb-1 small text-muted"><b>Buscar usuarios</b></label>
+                  <input type="text" id="u_filtro" class="form-control form-control-sm search-mini" placeholder="ID / usuario">
+                </div>
+              </div>
+              <div class="table-responsive" style="max-height:70vh;">
+                <table class="table table-striped table-bordered table-sm align-middle table-sticky" id="tablaUsuarios">
+                  <thead class="table-success">
+                    <tr>
+                      <th style="width:70px;">ID</th>
+                      <th>Usuario</th>
+                      <th style="width:110px;">Intentos</th>
+                      <th style="width:120px;">Bloqueado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                  <?php if (!$usuarios): ?>
+                    <tr>
+                      <td colspan="4" class="text-center text-muted">No hay usuarios.</td>
+                    </tr>
+                  <?php else: ?>
+                    <?php foreach ($usuarios as $u): ?>
+                      <tr>
+                        <td><?= (int)$u['id'] ?></td>
+                        <td><?= h($u['nombre_usuario']) ?></td>
+                        <td class="cell-qty"><?= (int)$u['intentos'] ?></td>
+                        <td>
+                          <?php if ((int)$u['bloqueado'] === 1): ?>
+                            <span class="badge text-bg-danger">Sí</span>
+                          <?php else: ?>
+                            <span class="badge text-bg-success">No</span>
+                          <?php endif; ?>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /tab-usuarios -->
 
   </div><!-- /tab-content -->
 </div>
@@ -2691,12 +2796,129 @@ document.addEventListener('DOMContentLoaded', ()=>{
       }
     });
   }
+
+  // ====== Pestaña Usuarios: filtro, generación de contraseña y alta ======
+  const uFiltro = document.getElementById('u_filtro');
+  const tablaUsuarios = document.getElementById('tablaUsuarios');
+  const uForm = document.getElementById('formUsuario');
+  const uErrEl = document.getElementById('u_error');
+  const uOkEl = document.getElementById('u_ok');
+  const uNombreEl = document.getElementById('u_nombre_usuario');
+  const uPassEl = document.getElementById('u_password');
+  const uPass2El = document.getElementById('u_password2');
+  const uBtnGenerar = document.getElementById('u_btn_generar');
+
+  function applyUsuariosFilter(){
+    if (!tablaUsuarios) return;
+    const term = (uFiltro?.value || '').trim().toLowerCase();
+    tablaUsuarios.querySelectorAll('tbody tr').forEach(tr=>{
+      const tds = tr.querySelectorAll('td,th');
+      if (tds.length < 4){ tr.style.display=''; return; }
+      const id = (tds[0].textContent||'').toLowerCase();
+      const user = (tds[1].textContent||'').toLowerCase();
+      const match = !term || id.includes(term) || user.includes(term);
+      tr.style.display = match ? '' : 'none';
+    });
+  }
+
+  function generarPasswordSegura(length = 14){
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*';
+    let out = '';
+    if (window.crypto?.getRandomValues) {
+      const values = new Uint32Array(length);
+      window.crypto.getRandomValues(values);
+      for (let i = 0; i < length; i++) {
+        out += chars[values[i] % chars.length];
+      }
+      return out;
+    }
+    for (let i = 0; i < length; i++) {
+      out += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return out;
+  }
+
+  if (uFiltro){
+    uFiltro.addEventListener('input', debounce(applyUsuariosFilter, 120));
+  }
+  applyUsuariosFilter();
+
+  if (uBtnGenerar){
+    uBtnGenerar.addEventListener('click', ()=>{
+      const pwd = generarPasswordSegura(14);
+      if (uPassEl) uPassEl.value = pwd;
+      if (uPass2El) uPass2El.value = pwd;
+      if (uErrEl){ uErrEl.style.display='none'; uErrEl.textContent=''; }
+      if (uOkEl){
+        uOkEl.textContent = 'Contraseña generada automáticamente.';
+        uOkEl.style.display = 'block';
+      }
+    });
+  }
+
+  if (uForm){
+    uForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      if (uErrEl){ uErrEl.style.display='none'; uErrEl.textContent=''; }
+      if (uOkEl){ uOkEl.style.display='none'; uOkEl.textContent=''; }
+
+      const nombre_usuario = (uNombreEl?.value || '').trim();
+      const password = (uPassEl?.value || '').trim();
+      const password2 = (uPass2El?.value || '').trim();
+
+      const errs = [];
+      if (!nombre_usuario) errs.push('El usuario es obligatorio.');
+      if (!/^[A-Za-z0-9._-]{3,50}$/.test(nombre_usuario)) {
+        errs.push('Usuario inválido. Usa 3-50 caracteres: letras, números, punto, guión o guión bajo.');
+      }
+      if (!password) errs.push('La contraseña es obligatoria.');
+      if (password.length < 8) errs.push('La contraseña debe tener al menos 8 caracteres.');
+      if (password !== password2) errs.push('Las contraseñas no coinciden.');
+
+      if (errs.length){
+        if (uErrEl){
+          uErrEl.textContent = errs.join(' | ');
+          uErrEl.style.display='block';
+        }
+        return;
+      }
+
+      try{
+        const res = await fetch('save_usuario.php', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ nombre_usuario, password })
+        });
+        let data=null, txt='';
+        try { data = await res.json(); } catch(_){ txt = await res.text(); }
+
+        if(res.ok && data && data.ok){
+          if (uOkEl){
+            uOkEl.textContent = 'Usuario creado correctamente.';
+            uOkEl.style.display='block';
+          }
+          setTimeout(()=> location.reload(), 450);
+        } else {
+          const msg = (data && (data.errors||data.error))
+            ? (Array.isArray(data.errors)? data.errors.join(' | ') : data.error)
+            : (txt || 'No se pudo guardar el usuario.');
+          if (uErrEl){
+            uErrEl.textContent = msg;
+            uErrEl.style.display='block';
+          }
+        }
+      } catch(e){
+        console.error(e);
+        if (uErrEl){
+          uErrEl.textContent = 'Error de red.';
+          uErrEl.style.display='block';
+        }
+      }
+    });
+  }
 });
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-
-
-

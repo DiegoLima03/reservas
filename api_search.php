@@ -1,7 +1,7 @@
-
 <?php
 // api_search.php — endpoint de autocompletado para proveedor / delegacion / producto
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
 
 $debug = isset($_GET['debug']) ? true : false;
 if ($debug) {
@@ -10,6 +10,8 @@ if ($debug) {
   @error_reporting(E_ALL);
 }
 header('Content-Type: application/json; charset=UTF-8');
+
+require_login_json();
 
 $type = isset($_GET['type']) ? $_GET['type'] : '';
 $q    = isset($_GET['q']) ? trim((string)$_GET['q']) : '';

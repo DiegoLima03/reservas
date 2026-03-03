@@ -1,6 +1,9 @@
 <?php
 // api_proveedores_producto.php — devuelve proveedores que ofrecen un producto
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+
+require_login_json();
 
 header('Content-Type: application/json; charset=UTF-8');
 

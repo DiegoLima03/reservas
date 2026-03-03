@@ -1,6 +1,9 @@
 <?php
 // api_asignaciones_linea.php — devuelve asignaciones para un producto+proveedor concretos
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+
+require_login_json();
 
 header('Content-Type: application/json; charset=UTF-8');
 

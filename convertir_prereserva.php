@@ -2,8 +2,11 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
 
 header('Content-Type: application/json; charset=UTF-8');
+
+require_login_json();
 
 /**
  * @return array<string, mixed>

@@ -1,12 +1,15 @@
 <?php
 // save_producto.php — alta sencilla de productos
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
 
 @ini_set('display_errors','1');
 @ini_set('display_startup_errors','1');
 @error_reporting(E_ALL);
 
 header('Content-Type: application/json; charset=UTF-8');
+
+require_login_json();
 
 // Recibir datos POST (form o JSON)
 $input = $_POST;
