@@ -165,9 +165,9 @@ try {
     $preReservasPendPorProductoBruto[$key] = (int)($preReservasPendPorProductoBruto[$key] ?? 0) + (int)($pr['cantidad'] ?? 0);
   }
 
-  // Calcular stock libre tras cubrir las pre-reservas:
-  // stock_restante (cantidad_disponible en compras_stock) - pre_reservas_pendientes
-  $preReservasPendPorProducto = [];
+  // Calcular compra sugerida para cubrir las pre-reservas pendientes:
+  // compra_sugerida = pre_reservas_pendientes - stock_restante
+  $compraSugeridaPorProducto = [];
   if ($preReservasPendPorProductoBruto) {
     $sqlComprasPorProducto = "
       SELECT
@@ -189,10 +189,10 @@ try {
 
     foreach ($preReservasPendPorProductoBruto as $key => $cantidadPreReservas) {
       $restante = (int)($comprasPorProducto[$key] ?? 0);
-      // stock libre = stock restante - pre-reservas
-      $libre = (int)$restante - (int)$cantidadPreReservas;
-      if ($libre > 0) {
-        $preReservasPendPorProducto[$key] = $libre;
+      // Faltante a comprar para cubrir pre-reservas.
+      $sugerida = (int)$cantidadPreReservas - (int)$restante;
+      if ($sugerida > 0) {
+        $compraSugeridaPorProducto[$key] = $sugerida;
       }
     }
   }
@@ -1743,7 +1743,7 @@ try {
 <script>
 const API_SEARCH = new URL('api_search.php', location.href).toString();
 const nf         = new Intl.NumberFormat('es-ES');
-const PRE_RESERVA_BY_PRODUCT = <?= json_encode($preReservasPendPorProducto ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+const COMPRA_SUGERIDA_BY_PRODUCT = <?= json_encode($compraSugeridaPorProducto ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 let mostrarCerradasAntiguas = false;
 
 function debounce(fn, ms){
@@ -1771,14 +1771,14 @@ function updateCompraGhostForProducto(productoNombre){
   }
 
   const key = nombre.toLocaleLowerCase('es-ES');
-  const pendiente = parseInt(PRE_RESERVA_BY_PRODUCT[key] || 0, 10) || 0;
+  const sugerida = parseInt(COMPRA_SUGERIDA_BY_PRODUCT[key] || 0, 10) || 0;
 
-  if (pendiente > 0) {
-    cantidadInput.placeholder = `Stock libre: ${nf.format(pendiente)}`;
-    hint.textContent = `Stock libre tras pre-reservas de ${nombre}: ${nf.format(pendiente)}`;
+  if (sugerida > 0) {
+    cantidadInput.placeholder = `Sugerida: ${nf.format(sugerida)}`;
+    hint.textContent = `Compra sugerida para ${nombre}: ${nf.format(sugerida)} (pre-reservas - stock restante).`;
   } else {
     cantidadInput.placeholder = '';
-    hint.textContent = `Sin stock libre adicional para ${nombre}.`;
+    hint.textContent = `No hace falta compra adicional para ${nombre}.`;
   }
 }
 function createAutocomplete({input, hidden, list, type}) {
@@ -1797,17 +1797,22 @@ function createAutocomplete({input, hidden, list, type}) {
     current.forEach((it, i)=>{
       const div = document.createElement('div');
       div.className = 'autocomplete-item';
-      div.textContent = it.nombre;
+      const tipo = ((it && it.tipo) ? String(it.tipo) : '').trim();
+      const nombre = ((it && it.nombre) ? String(it.nombre) : '').trim();
+      const display = (type === 'producto')
+        ? [tipo, nombre].filter(Boolean).join(' ')
+        : nombre;
+      div.textContent = display || nombre;
       div.addEventListener('mousedown', e=>{
         e.preventDefault();
         e.stopPropagation();
-        input.value = it.nombre;
+        input.value = nombre;
         // Para productos en el alta de compras no fijamos todavía el id definitivo:
         // primero se elige el nombre (agrupado) y luego el proveedor.
         if (type === 'producto' && input.id === 'c_producto_nombre') {
           hidden.value = ''; // se resolverá en el backend con nombre+proveedor
-          loadProveedoresForProducto(it.nombre);
-          updateCompraGhostForProducto(it.nombre);
+          loadProveedoresForProducto(nombre);
+          updateCompraGhostForProducto(nombre);
         } else {
           hidden.value = it.id;
         }

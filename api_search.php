@@ -46,8 +46,9 @@ try {
     ");
   } else { // producto
     // Autocompletar productos por nombre, devolviendo solo un registro por nombre
+    // y exponiendo también el tipo para mostrar "tipo + nombre" en el desplegable.
     $stmt = $pdo->prepare("
-      SELECT MIN(id) AS id, nombre
+      SELECT MIN(id) AS id, nombre, MIN(tipo) AS tipo
       FROM productos
       WHERE nombre LIKE :q
       GROUP BY nombre
