@@ -450,7 +450,7 @@ try {
     href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Merriweather+Sans:ital,wght@0,300..800;1,300..800;1,300..800&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <link rel="icon" href="img/Veraleza.png" type="image/png" class="url-logo">
+  <link rel="icon" href="img/logo.png" type="image/png" class="url-logo">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
   <style>
@@ -613,7 +613,6 @@ try {
 
     body.gestion-compras .master-filters {
       padding: 12px 12px 0;
-      border-bottom: 1px solid var(--vz-marron2);
       margin-bottom: 12px !important;
     }
 
@@ -627,6 +626,22 @@ try {
 
     body.gestion-compras .card-body {
       padding: 14px;
+    }
+
+    body.gestion-compras .admin-tablas-host {
+      border: 1px solid var(--vz-marron2);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--vz-blanco);
+      min-height: 76vh;
+    }
+
+    body.gestion-compras .admin-tablas-iframe {
+      width: 100%;
+      height: 78vh;
+      border: 0;
+      display: block;
+      background: var(--vz-crema);
     }
 
     body.gestion-compras .form-label,
@@ -793,6 +808,14 @@ try {
       body.gestion-compras .master-filters {
         padding: 10px 10px 0;
       }
+
+      body.gestion-compras .admin-tablas-host {
+        min-height: 72vh;
+      }
+
+      body.gestion-compras .admin-tablas-iframe {
+        height: 72vh;
+      }
     }
   </style>
 </head>
@@ -848,6 +871,11 @@ try {
     <li class="nav-item" role="presentation">
       <button class="nav-link" id="tab-usuarios-tab" data-bs-toggle="tab" data-bs-target="#tab-usuarios" type="button" role="tab">
         Usuarios
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-admin-tablas-tab" data-bs-toggle="tab" data-bs-target="#tab-admin-tablas" type="button" role="tab">
+        Gestión tablas
       </button>
     </li>
     <?php endif; ?>
@@ -1237,13 +1265,6 @@ try {
                     <div class="autocomplete-list d-none" id="p_proveedor_list"></div>
                   </div>
                 </div>
-                <div class="mb-2">
-                  <label class="form-label mb-1"><b>Precio</b></label>
-                  <div class="input-group input-group-sm">
-                    <span class="input-group-text">€</span>
-                    <input type="number" step="0.01" min="0" id="p_precio" name="precio" class="form-control form-control-sm">
-                  </div>
-                </div>
                 <div class="d-flex align-items-center mt-3">
                   <div class="text-danger small" id="p_error" style="display:none;"></div>
                   <button type="submit" class="btn btn-success btn-sm ms-auto">Guardar producto</button>
@@ -1271,13 +1292,12 @@ try {
                       <th>Tipo</th>
                       <th class="cell-desc">Nombre</th>
                       <th>Proveedor</th>
-                      <th class="cell-qty" style="width:110px;">Precio</th>
                     </tr>
                   </thead>
                   <tbody>
                   <?php if (!$productos): ?>
                     <tr>
-                      <td colspan="6" class="text-center text-muted">No hay productos.</td>
+                      <td colspan="5" class="text-center text-muted">No hay productos.</td>
                     </tr>
                   <?php else: ?>
                     <?php foreach ($productos as $p): ?>
@@ -1287,11 +1307,6 @@ try {
                         <td><?= h($p['tipo']) ?></td>
                         <td class="cell-desc"><?= h($p['nombre']) ?></td>
                         <td><?= h($p['proveedor']) ?></td>
-                        <td class="cell-qty">
-                          <?php if (isset($p['precio']) && $p['precio'] !== null): ?>
-                            <?= number_format((float)$p['precio'], 2, ',', '.') ?> €
-                          <?php endif; ?>
-                        </td>
                       </tr>
                     <?php endforeach; ?>
                   <?php endif; ?>
@@ -1483,12 +1498,13 @@ try {
                       <th style="width:120px;">Rol</th>
                       <th style="width:110px;">Intentos</th>
                       <th style="width:120px;">Bloqueado</th>
+                      <th style="width:170px;" class="text-center">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
                   <?php if (!$usuarios): ?>
                     <tr>
-                      <td colspan="5" class="text-center text-muted">No hay usuarios.</td>
+                      <td colspan="6" class="text-center text-muted">No hay usuarios.</td>
                     </tr>
                   <?php else: ?>
                     <?php foreach ($usuarios as $u): ?>
@@ -1510,6 +1526,14 @@ try {
                             <span class="badge text-bg-success">No</span>
                           <?php endif; ?>
                         </td>
+                        <td class="text-center">
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-outline-primary btn-cambiar-pass"
+                            data-usuario-id="<?= (int)$u['id'] ?>"
+                            data-usuario="<?= h($u['nombre_usuario']) ?>"
+                          >Cambiar contraseña</button>
+                        </td>
                       </tr>
                     <?php endforeach; ?>
                   <?php endif; ?>
@@ -1521,6 +1545,19 @@ try {
         </div>
       </div>
     </div><!-- /tab-usuarios -->
+    <?php endif; ?>
+
+    <?php if ($isAdmin): ?>
+    <div class="tab-pane fade" id="tab-admin-tablas" role="tabpanel" aria-labelledby="tab-admin-tablas-tab">
+      <div class="admin-tablas-host">
+        <iframe
+          class="admin-tablas-iframe"
+          src="admin_tablas.php?embedded=1"
+          title="Gestión integral de tablas"
+          loading="lazy"
+        ></iframe>
+      </div>
+    </div><!-- /tab-admin-tablas -->
     <?php endif; ?>
 
   </div><!-- /tab-content -->
@@ -1575,6 +1612,52 @@ try {
     </div>
   </div>
 </div>
+
+<?php if ($isAdmin): ?>
+<!-- MODAL CAMBIAR CONTRASEÑA USUARIO -->
+<div class="modal fade" id="modalCambiarPasswordUsuario" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="formCambiarPasswordUsuario" autocomplete="off">
+        <div class="modal-header">
+          <h5 class="modal-title">Cambiar contraseña</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="cup_usuario_id" name="usuario_id">
+          <div class="mb-2">
+            <label class="form-label mb-1"><b>Usuario</b></label>
+            <input type="text" id="cup_usuario_nombre" class="form-control form-control-sm" readonly>
+          </div>
+          <div class="mb-2">
+            <label class="form-label mb-1"><b>Nueva contraseña</b></label>
+            <div class="input-group input-group-sm">
+              <input type="password" id="cup_password" class="form-control form-control-sm" required>
+              <button type="button" class="btn btn-outline-secondary" id="cup_btn_generar">Generar</button>
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label mb-1"><b>Repetir contraseña</b></label>
+            <input type="password" id="cup_password2" class="form-control form-control-sm" required>
+          </div>
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" value="1" id="cup_desbloquear" checked>
+            <label class="form-check-label" for="cup_desbloquear">
+              Desbloquear usuario y reiniciar intentos
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <div class="me-auto text-danger small" id="cup_error" style="display:none;"></div>
+          <div class="me-auto text-success small" id="cup_ok" style="display:none;"></div>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button class="btn btn-primary" type="submit">Guardar contraseña</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
 
 <!-- MODAL NUEVA PRE-RESERVA -->
 <div class="modal fade" id="modalPreReserva" tabindex="-1" aria-hidden="true">
@@ -2601,20 +2684,18 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const term = (pFiltro?.value || '').trim().toLowerCase();
     tablaProductos.querySelectorAll('tbody tr').forEach(tr=>{
       const tds = tr.querySelectorAll('td,th');
-      if (tds.length < 6){ tr.style.display=''; return; }
+      if (tds.length < 5){ tr.style.display=''; return; }
       const id    = (tds[0].textContent||'').toLowerCase();
       const codigo= (tds[1].textContent||'').toLowerCase();
       const tipo  = (tds[2].textContent||'').toLowerCase();
       const nombre= (tds[3].textContent||'').toLowerCase();
       const prov  = (tds[4].textContent||'').toLowerCase();
-      const precio= (tds[5].textContent||'').toLowerCase();
       const match = !term
         || id.includes(term)
         || codigo.includes(term)
         || tipo.includes(term)
         || nombre.includes(term)
-        || prov.includes(term)
-        || precio.includes(term);
+        || prov.includes(term);
       tr.style.display = match ? '' : 'none';
     });
   }
@@ -2634,14 +2715,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const nombre    = (document.getElementById('p_nombre')?.value || '').trim();
       const codigo_velneo = (document.getElementById('p_codigo_velneo')?.value || '').trim();
       const proveedor_id = parseInt(document.getElementById('p_proveedor_id')?.value || '0', 10) || 0;
-      const precioRaw = (document.getElementById('p_precio')?.value || '').trim();
-      const precio = precioRaw === '' ? null : parseFloat(precioRaw.replace(',', '.'));
 
       const errs = [];
       if(!tipo_id) errs.push('Selecciona un tipo de producto.');
       if(!nombre) errs.push('El nombre es obligatorio.');
       if(!proveedor_id) errs.push('Selecciona un proveedor.');
-      if(precio !== null && (isNaN(precio) || precio < 0)) errs.push('El precio debe ser un número mayor o igual que 0.');
 
       if(errs.length){
         if (pErrEl){
@@ -2655,7 +2733,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         const res = await fetch('save_producto.php', {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ tipo_id, nombre, codigo_velneo, proveedor_id, precio })
+          body: JSON.stringify({ tipo_id, nombre, codigo_velneo, proveedor_id })
         });
         let data=null, txt='';
         try { data = await res.json(); } catch(_){ txt = await res.text(); }
@@ -2834,13 +2912,24 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const uPass2El = document.getElementById('u_password2');
   const uEsAdminEl = document.getElementById('u_es_admin');
   const uBtnGenerar = document.getElementById('u_btn_generar');
+  const modalCambiarPassEl = document.getElementById('modalCambiarPasswordUsuario');
+  const modalCambiarPass = modalCambiarPassEl ? new bootstrap.Modal(modalCambiarPassEl) : null;
+  const cupForm = document.getElementById('formCambiarPasswordUsuario');
+  const cupUsuarioIdEl = document.getElementById('cup_usuario_id');
+  const cupUsuarioNombreEl = document.getElementById('cup_usuario_nombre');
+  const cupPassEl = document.getElementById('cup_password');
+  const cupPass2El = document.getElementById('cup_password2');
+  const cupDesbloquearEl = document.getElementById('cup_desbloquear');
+  const cupErrEl = document.getElementById('cup_error');
+  const cupOkEl = document.getElementById('cup_ok');
+  const cupBtnGenerar = document.getElementById('cup_btn_generar');
 
   function applyUsuariosFilter(){
     if (!tablaUsuarios) return;
     const term = (uFiltro?.value || '').trim().toLowerCase();
     tablaUsuarios.querySelectorAll('tbody tr').forEach(tr=>{
       const tds = tr.querySelectorAll('td,th');
-      if (tds.length < 5){ tr.style.display=''; return; }
+      if (tds.length < 6){ tr.style.display=''; return; }
       const id = (tds[0].textContent||'').toLowerCase();
       const user = (tds[1].textContent||'').toLowerCase();
       const rol = (tds[2].textContent||'').toLowerCase();
@@ -2880,6 +2969,99 @@ document.addEventListener('DOMContentLoaded', ()=>{
       if (uOkEl){
         uOkEl.textContent = 'Contraseña generada automáticamente.';
         uOkEl.style.display = 'block';
+      }
+    });
+  }
+
+  if (cupBtnGenerar){
+    cupBtnGenerar.addEventListener('click', ()=>{
+      const pwd = generarPasswordSegura(14);
+      if (cupPassEl) cupPassEl.value = pwd;
+      if (cupPass2El) cupPass2El.value = pwd;
+      if (cupErrEl){ cupErrEl.style.display='none'; cupErrEl.textContent=''; }
+      if (cupOkEl){
+        cupOkEl.textContent = 'Contraseña generada automáticamente.';
+        cupOkEl.style.display = 'block';
+      }
+    });
+  }
+
+  if (tablaUsuarios && modalCambiarPass){
+    tablaUsuarios.addEventListener('click', (e)=>{
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const btn = target ? target.closest('.btn-cambiar-pass') : null;
+      if (!btn) return;
+      const uid = parseInt(btn.getAttribute('data-usuario-id') || '0', 10) || 0;
+      const uname = (btn.getAttribute('data-usuario') || '').trim();
+      if (!uid) return;
+
+      if (cupUsuarioIdEl) cupUsuarioIdEl.value = String(uid);
+      if (cupUsuarioNombreEl) cupUsuarioNombreEl.value = uname;
+      if (cupPassEl) cupPassEl.value = '';
+      if (cupPass2El) cupPass2El.value = '';
+      if (cupDesbloquearEl) cupDesbloquearEl.checked = true;
+      if (cupErrEl){ cupErrEl.style.display='none'; cupErrEl.textContent=''; }
+      if (cupOkEl){ cupOkEl.style.display='none'; cupOkEl.textContent=''; }
+
+      modalCambiarPass.show();
+    });
+  }
+
+  if (cupForm){
+    cupForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      if (cupErrEl){ cupErrEl.style.display='none'; cupErrEl.textContent=''; }
+      if (cupOkEl){ cupOkEl.style.display='none'; cupOkEl.textContent=''; }
+
+      const usuario_id = parseInt(cupUsuarioIdEl?.value || '0', 10) || 0;
+      const password = (cupPassEl?.value || '').trim();
+      const password2 = (cupPass2El?.value || '').trim();
+      const desbloquear = cupDesbloquearEl?.checked ? 1 : 0;
+
+      const errs = [];
+      if (!usuario_id) errs.push('Usuario inválido.');
+      if (!password) errs.push('La contraseña es obligatoria.');
+      if (password.length < 8) errs.push('La contraseña debe tener al menos 8 caracteres.');
+      if (password !== password2) errs.push('Las contraseñas no coinciden.');
+
+      if (errs.length){
+        if (cupErrEl){
+          cupErrEl.textContent = errs.join(' | ');
+          cupErrEl.style.display = 'block';
+        }
+        return;
+      }
+
+      try{
+        const res = await fetch('update_usuario_password.php', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ usuario_id, password, desbloquear })
+        });
+        let data=null, txt='';
+        try { data = await res.json(); } catch(_){ txt = await res.text(); }
+
+        if(res.ok && data && data.ok){
+          if (cupOkEl){
+            cupOkEl.textContent = 'Contraseña actualizada correctamente.';
+            cupOkEl.style.display='block';
+          }
+          setTimeout(()=> location.reload(), 450);
+        } else {
+          const msg = (data && (data.errors||data.error))
+            ? (Array.isArray(data.errors)? data.errors.join(' | ') : data.error)
+            : (txt || 'No se pudo actualizar la contraseña.');
+          if (cupErrEl){
+            cupErrEl.textContent = msg;
+            cupErrEl.style.display='block';
+          }
+        }
+      } catch(err){
+        console.error(err);
+        if (cupErrEl){
+          cupErrEl.textContent = 'Error de red.';
+          cupErrEl.style.display='block';
+        }
       }
     });
   }

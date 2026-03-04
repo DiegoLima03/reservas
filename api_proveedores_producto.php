@@ -38,7 +38,7 @@ try {
         COALESCE(SUM(cs.cantidad_disponible), 0) AS disponible
       FROM productos p
       INNER JOIN proveedores pr
-        ON pr.nombre COLLATE utf8mb4_general_ci = p.proveedor COLLATE utf8mb4_general_ci
+        ON LOWER(TRIM(CONVERT(pr.nombre USING utf8mb4))) = LOWER(TRIM(CONVERT(p.proveedor USING utf8mb4)))
       LEFT JOIN compras_stock cs
         ON cs.producto_id = p.id
        AND cs.proveedor_id = pr.id

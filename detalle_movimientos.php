@@ -261,7 +261,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
   <title>Detalle de movimientos</title>
   <link rel="stylesheet" href="style.css">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="icon" href="img/Veraleza.png" type="image/png" class="url-logo">
+  <link rel="icon" href="img/logo.png" type="image/png" class="url-logo">
   <style>
     .table-sticky thead th { position: sticky; top: 0; z-index: 2; }
     .search-mini { max-width: 320px; }

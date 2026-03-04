@@ -75,7 +75,7 @@ try {
     SELECT p.id
     FROM productos p
     WHERE p.nombre = :nombre
-      AND p.proveedor COLLATE utf8mb4_general_ci = :prov COLLATE utf8mb4_general_ci
+      AND LOWER(TRIM(CONVERT(p.proveedor USING utf8mb4))) = LOWER(TRIM(CONVERT(:prov USING utf8mb4)))
     LIMIT 1
   ");
   $st->execute([
