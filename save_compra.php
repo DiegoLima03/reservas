@@ -2,6 +2,7 @@
 // save_compra.php — registra compras en compras_stock
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/movimientos_audit.php';
 
 @ini_set('display_errors','1');
 @ini_set('display_startup_errors','1');
@@ -60,6 +61,9 @@ if ($errors) {
 
 try {
   $pdo = pdo();
+  ensure_movimientos_audit_table($pdo);
+  $auditUser = movimientos_audit_current_user();
+
   $pdo->beginTransaction();
 
   // Validar existencia de proveedor y obtener su nombre
@@ -126,6 +130,13 @@ try {
   }
 
   $compra_id = (int)$pdo->lastInsertId();
+  registrar_movimiento_usuario(
+    $pdo,
+    'compra',
+    $compra_id,
+    $auditUser['usuario_id'],
+    $auditUser['usuario_nombre']
+  );
 
   $pdo->commit();
 

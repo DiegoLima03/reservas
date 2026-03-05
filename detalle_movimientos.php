@@ -2,6 +2,7 @@
 // detalle_movimientos.php — Historial de compras (entradas) y asignaciones (salidas)
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/movimientos_audit.php';
 
 require_login();
 
@@ -24,6 +25,7 @@ function es_dt($ts){
 
 try {
   $pdo = pdo();
+  ensure_movimientos_audit_table($pdo);
 
   // --- Filtros GET compartidos ---
   $q      = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
@@ -37,9 +39,10 @@ try {
   $whereC  = ['1=1'];
 
   if ($q !== '') {
-    $whereC[] = '(p.nombre LIKE :cq OR pr.nombre LIKE :cq2)';
+    $whereC[] = '(p.nombre LIKE :cq OR pr.nombre LIKE :cq2 OR COALESCE(muc.usuario_nombre, "") LIKE :cq3)';
     $paramsC[':cq']  = '%'.$q.'%';
     $paramsC[':cq2'] = '%'.$q.'%';
+    $paramsC[':cq3'] = '%'.$q.'%';
   }
   if ($f_ini !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $f_ini)) {
     $tsIni = strtotime($f_ini);
@@ -62,6 +65,7 @@ try {
       SELECT c.id,
              p.nombre  AS producto,
              pr.nombre AS proveedor,
+             COALESCE(muc.usuario_nombre, '-') AS usuario,
              c.cantidad_comprada,
              c.cantidad_disponible,
              c.semana AS fecha_compra,
@@ -69,6 +73,9 @@ try {
       FROM compras_stock c
       INNER JOIN productos   p  ON p.id  = c.producto_id
       INNER JOIN proveedores pr ON pr.id = c.proveedor_id
+      LEFT JOIN movimientos_usuario muc
+             ON muc.movimiento_tipo = 'compra'
+            AND muc.movimiento_id = c.id
       WHERE ".implode(' AND ', $whereC)."
       ORDER BY c.semana DESC, c.id DESC
     ";
@@ -91,12 +98,13 @@ try {
     fputcsv($out, ['Filtros', implode(' | ', $filters)], ';');
     fputcsv($out, [''], ';');
 
-    fputcsv($out, ['ID','Producto','Proveedor','Cant. comprada','Cant. disponible','Semana compra','Creada'], ';');
+    fputcsv($out, ['ID','Producto','Proveedor','Usuario','Cant. comprada','Cant. disponible','Semana compra','Creada'], ';');
     foreach ($comprasCsv as $r) {
       fputcsv($out, [
         (int)$r['id'],
         (string)$r['producto'],
         (string)$r['proveedor'],
+        (string)$r['usuario'],
         (int)$r['cantidad_comprada'],
         (int)$r['cantidad_disponible'],
         es_d($r['fecha_compra']),
@@ -112,6 +120,7 @@ try {
     SELECT c.id,
            p.nombre  AS producto,
            pr.nombre AS proveedor,
+           COALESCE(muc.usuario_nombre, '-') AS usuario,
            c.cantidad_comprada,
            c.cantidad_disponible,
            c.semana AS fecha_compra,
@@ -119,6 +128,9 @@ try {
     FROM compras_stock c
     INNER JOIN productos   p  ON p.id  = c.producto_id
     INNER JOIN proveedores pr ON pr.id = c.proveedor_id
+    LEFT JOIN movimientos_usuario muc
+           ON muc.movimiento_tipo = 'compra'
+          AND muc.movimiento_id = c.id
     WHERE ".implode(' AND ', $whereC)."
     ORDER BY c.semana DESC, c.id DESC
   ";
@@ -142,10 +154,11 @@ try {
   $whereS  = ['1=1'];
 
   if ($q !== '') {
-    $whereS[] = '(p.nombre LIKE :sq OR pr.nombre LIKE :sq2 OR d.nombre LIKE :sq3)';
+    $whereS[] = '(p.nombre LIKE :sq OR pr.nombre LIKE :sq2 OR d.nombre LIKE :sq3 OR COALESCE(mua.usuario_nombre, "") LIKE :sq4)';
     $paramsS[':sq']  = '%'.$q.'%';
     $paramsS[':sq2'] = '%'.$q.'%';
     $paramsS[':sq3'] = '%'.$q.'%';
+    $paramsS[':sq4'] = '%'.$q.'%';
   }
   if ($f_ini !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $f_ini)) {
     $whereS[] = 'a.fecha_salida >= :s_fini';
@@ -163,6 +176,7 @@ try {
              p.nombre  AS producto,
              pr.nombre AS proveedor,
              d.nombre  AS delegacion,
+             COALESCE(mua.usuario_nombre, '-') AS usuario,
              a.cantidad_asignada,
              a.fecha_salida,
              a.created_at
@@ -170,6 +184,9 @@ try {
       INNER JOIN productos    p  ON p.id  = a.producto_id
       INNER JOIN proveedores  pr ON pr.id = a.proveedor_id
       INNER JOIN delegaciones d  ON d.id  = a.delegacion_id
+      LEFT JOIN movimientos_usuario mua
+             ON mua.movimiento_tipo = 'asignacion'
+            AND mua.movimiento_id = a.id
       WHERE ".implode(' AND ', $whereS)."
       ORDER BY a.fecha_salida DESC, a.id DESC
     ";
@@ -192,13 +209,14 @@ try {
     fputcsv($out, ['Filtros', implode(' | ', $filters)], ';');
     fputcsv($out, [''], ';');
 
-    fputcsv($out, ['ID','Producto','Proveedor','Delegación','Cant. asignada','Fecha salida','Creada'], ';');
+    fputcsv($out, ['ID','Producto','Proveedor','Delegación','Usuario','Cant. asignada','Fecha salida','Creada'], ';');
     foreach ($salidasCsv as $r) {
       fputcsv($out, [
         (int)$r['id'],
         (string)$r['producto'],
         (string)$r['proveedor'],
         (string)$r['delegacion'],
+        (string)$r['usuario'],
         (int)$r['cantidad_asignada'],
         es_d($r['fecha_salida']),
         es_dt($r['created_at']),
@@ -214,6 +232,7 @@ try {
            p.nombre  AS producto,
            pr.nombre AS proveedor,
            d.nombre  AS delegacion,
+           COALESCE(mua.usuario_nombre, '-') AS usuario,
            a.cantidad_asignada,
            a.fecha_salida,
            a.created_at
@@ -221,6 +240,9 @@ try {
     INNER JOIN productos    p  ON p.id  = a.producto_id
     INNER JOIN proveedores  pr ON pr.id = a.proveedor_id
     INNER JOIN delegaciones d  ON d.id  = a.delegacion_id
+    LEFT JOIN movimientos_usuario mua
+           ON mua.movimiento_tipo = 'asignacion'
+          AND mua.movimiento_id = a.id
     WHERE ".implode(' AND ', $whereS)."
     ORDER BY a.fecha_salida DESC, a.id DESC
   ";
@@ -289,7 +311,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
   <form class="row gy-2 gx-2 align-items-end mb-3" method="get" action="detalle_movimientos.php" id="formFiltros">
     <div class="col-auto">
       <label for="ftexto" class="form-label mb-1 small text-muted"><b>Buscar</b></label>
-      <input type="text" id="ftexto" name="q" value="<?= h($q) ?>" class="form-control form-control-sm search-mini" placeholder="Producto / proveedor / delegación">
+      <input type="text" id="ftexto" name="q" value="<?= h($q) ?>" class="form-control form-control-sm search-mini" placeholder="Producto / proveedor / delegación / usuario">
     </div>
     <div class="col-auto">
       <label for="f_ini" class="form-label mb-1 small text-muted"><b>Fecha inicio</b></label>
@@ -320,6 +342,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
                 <th style="width:70px;">ID</th>
                 <th>Producto</th>
                 <th>Proveedor</th>
+                <th style="width:140px;">Usuario</th>
                 <th class="text-end" style="width:120px;">Cant. comprada</th>
                 <th class="text-end" style="width:120px;">Cant. disponible</th>
                 <th style="width:120px;">Semana compra</th>
@@ -332,6 +355,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
                 <td><?= (int)$c['id'] ?></td>
                 <td><?= h($c['producto']) ?></td>
                 <td><?= h($c['proveedor']) ?></td>
+                <td><?= h($c['usuario']) ?></td>
                 <td class="text-end"><?= number_format((int)$c['cantidad_comprada'], 0, ',', '.') ?></td>
                 <td class="text-end"><?= number_format((int)$c['cantidad_disponible'], 0, ',', '.') ?></td>
                 <td><?= es_d($c['fecha_compra']) ?></td>
@@ -341,7 +365,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
             </tbody>
             <tfoot>
               <tr>
-                <th colspan="3" class="text-end">TOTAL</th>
+                <th colspan="4" class="text-end">TOTAL</th>
                 <th class="text-end"><?= number_format($totalComprada,   0, ',', '.') ?></th>
                 <th class="text-end"><?= number_format($totalDisponible, 0, ',', '.') ?></th>
                 <th colspan="2"></th>
@@ -370,6 +394,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
                 <th>Producto</th>
                 <th>Proveedor</th>
                 <th>Delegación</th>
+                <th style="width:140px;">Usuario</th>
                 <th class="text-end" style="width:130px;">Cant. asignada</th>
                 <th style="width:120px;">Fecha salida</th>
                 <th style="width:170px;">Creada</th>
@@ -382,6 +407,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
                 <td><?= h($s['producto']) ?></td>
                 <td><?= h($s['proveedor']) ?></td>
                 <td><?= h($s['delegacion']) ?></td>
+                <td><?= h($s['usuario']) ?></td>
                 <td class="text-end"><?= number_format((int)$s['cantidad_asignada'], 0, ',', '.') ?></td>
                 <td><?= es_d($s['fecha_salida']) ?></td>
                 <td><?= es_dt($s['created_at']) ?></td>
@@ -390,7 +416,7 @@ $exportSalidasUrl = 'detalle_movimientos.php?'.http_build_query($pSalidas);
             </tbody>
             <tfoot>
               <tr>
-                <th colspan="4" class="text-end">TOTAL</th>
+                <th colspan="5" class="text-end">TOTAL</th>
                 <th class="text-end"><?= number_format($totalAsignada, 0, ',', '.') ?></th>
                 <th colspan="2"></th>
               </tr>

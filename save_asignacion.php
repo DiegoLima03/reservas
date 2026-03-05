@@ -2,6 +2,7 @@
 // save_asignacion.php — registra una salida/asignación a delegación
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/movimientos_audit.php';
 
 @ini_set('display_errors','1');
 @ini_set('display_startup_errors','1');
@@ -74,6 +75,9 @@ if ($errors) {
 
 try {
   $pdo = pdo();
+  ensure_movimientos_audit_table($pdo);
+  $auditUser = movimientos_audit_current_user();
+
   $pdo->beginTransaction();
 
   // Validar entidades
@@ -146,6 +150,13 @@ try {
   }
 
   $asignacion_id = (int)$pdo->lastInsertId();
+  registrar_movimiento_usuario(
+    $pdo,
+    'asignacion',
+    $asignacion_id,
+    $auditUser['usuario_id'],
+    $auditUser['usuario_nombre']
+  );
 
   // Restar cantidad de compras_stock con estrategia FIFO por fecha_compra
   $restante = $cantidad;

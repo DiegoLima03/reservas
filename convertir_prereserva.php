@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/movimientos_audit.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 
@@ -99,6 +100,9 @@ $pdo = null;
 
 try {
     $pdo = pdo();
+    ensure_movimientos_audit_table($pdo);
+    $auditUser = movimientos_audit_current_user();
+
     $pdo->beginTransaction();
 
     $stmtPre = $pdo->prepare(
@@ -280,6 +284,13 @@ try {
         ]);
         $asignacionId = (int)$pdo->lastInsertId();
         $asignacionIds[] = $asignacionId;
+        registrar_movimiento_usuario(
+            $pdo,
+            'asignacion',
+            $asignacionId,
+            $auditUser['usuario_id'],
+            $auditUser['usuario_nombre']
+        );
 
         $restanteAsignar = (int)$det['cantidad'];
         foreach ($det['rows_disp'] as $rowDisp) {
